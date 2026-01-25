@@ -22,9 +22,9 @@ num_heads: 4              # Attention heads in SSA
 sample_rate: 250          # EEG sample rate
 
 # ============================================
-# Signal Processing (NEW)
+# Signal Processing
 # ============================================
-use_preprocessing: true   # Enable ERD window + channel attention
+use_preprocessing: false  # Disabled - MOABB already epochs correctly
 
 # ============================================
 # Regularization (INCREASED)
