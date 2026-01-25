@@ -1,0 +1,36 @@
+# Training configuration
+
+# Optimizer
+optimizer:
+  name: AdamW
+  lr: 0.001
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+# Learning rate scheduler
+scheduler:
+  name: CosineAnnealingLR
+  T_max: 100
+  eta_min: 1e-6
+
+# Training parameters
+epochs: 100
+gradient_clip: 1.0
+
+# Early stopping
+early_stopping:
+  enabled: true
+  patience: 15
+  min_delta: 0.001
+  monitor: val_loss
+
+# Checkpointing
+checkpoint:
+  save_best: true
+  save_last: true
+  monitor: val_accuracy
+
+# Logging
+logging:
+  log_every_n_steps: 10
+  use_mlflow: true

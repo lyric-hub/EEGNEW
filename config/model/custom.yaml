@@ -1,0 +1,43 @@
+# S-MSTT v2 Model Configuration
+# Enhanced Spiking Multilevel Spatio-Temporal Transformer
+
+name: CustomModel
+
+# Input dimensions (auto-detected from MOABB data)
+n_channels: 22
+n_samples: 1126
+n_classes: 4
+
+# ============================================
+# SNN Simulation
+# ============================================
+t_steps: 8                # Simulation timesteps
+
+# ============================================
+# Architecture (INCREASED CAPACITY)
+# ============================================
+f1: 32                    # Initial feature channels (was 16)
+depth_multiplier: 2       # Spatial conv depth multiplier
+num_heads: 4              # Attention heads in SSA
+sample_rate: 250          # EEG sample rate
+
+# ============================================
+# Signal Processing (NEW)
+# ============================================
+use_preprocessing: true   # Enable ERD window + channel attention
+
+# ============================================
+# Regularization (INCREASED)
+# ============================================
+dropout_rate: 0.2         # Dropout probability (was 0.1)
+
+# ============================================
+# Memory Optimization
+# ============================================
+attention_pool: 8         # Pool factor for attention
+
+# ============================================
+# LIF Neuron Parameters (TUNED)
+# ============================================
+tau: 4.0                  # Membrane time constant (was 2.0)
+v_threshold: 1.0          # Firing threshold

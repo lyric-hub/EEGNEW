@@ -1,0 +1,24 @@
+# Dataset configuration for Subject-Independent Evaluation
+dataset_name: BNCI2014_001  # 4-class MI dataset from MOABB
+
+# Subject split for subject-independent evaluation
+train_subjects: [1, 2, 3, 4, 5, 6, 7, 8]
+test_subjects: [9]
+
+# Validation split ratio (from training subjects)
+val_ratio: 0.1
+
+# MOABB MotorImagery paradigm parameters
+paradigm:
+  n_classes: 4
+  fmin: 0.5           # Low frequency (Hz)
+  fmax: 100.0         # High frequency (Hz)
+  tmin: -0.5          # Start time relative to cue (seconds)
+  tmax: 4.0           # End time relative to cue (seconds)
+  resample: 250       # Sampling rate (Hz)
+  channels: null      # Use all EEG channels
+
+# DataLoader settings
+batch_size: 16
+num_workers: 0
+pin_memory: true

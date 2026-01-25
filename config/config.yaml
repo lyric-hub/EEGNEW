@@ -1,0 +1,20 @@
+defaults:
+  - data: default
+  - model: custom
+  - training: default
+  - _self_
+
+experiment_name: eeg-mi-classification
+
+# Paths
+paths:
+  data_raw: ${hydra:runtime.cwd}/data/raw
+  data_processed: ${hydra:runtime.cwd}/data/processed
+  models: ${hydra:runtime.cwd}/models
+  outputs: ${hydra:runtime.cwd}/outputs
+
+# Random seed for reproducibility
+seed: 42
+
+# Device configuration
+device: auto  # auto, cpu, cuda, mps
