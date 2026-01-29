@@ -24,13 +24,13 @@ stages:
       - data/processed/test/labels.npy
 
   train:
-    cmd: python scripts/train.py training.logging.use_mlflow=false
+    cmd: python scripts/train.py training.logging.use_mlflow=true
     deps:
       - scripts/train.py
-      - src/models/eegnet.py
+      - src/models/custom.py
       - src/training/trainer.py
       - config/config.yaml
-      - config/model/eegnet.yaml
+      - config/model/custom.yaml
       - config/training/default.yaml
       - data/processed/train/data.npy
       - data/processed/val/data.npy

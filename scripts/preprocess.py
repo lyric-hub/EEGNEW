@@ -113,23 +113,33 @@ def split_data(
         Dictionary with 'train', 'val', 'test' keys containing (data, labels) tuples.
     """
     # Split off test set
-    x_temp, x_test, y_temp, y_test = train_test_split(
-        data,
-        labels,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=labels,
-    )
+    if test_size > 0:
+        x_temp, x_test, y_temp, y_test = train_test_split(
+            data,
+            labels,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=labels,
+        )
+        # Split remaining into train and val
+        val_ratio = val_size / (1 - test_size)
+    else:
+        x_temp, y_temp = data, labels
+        x_test, y_test = np.array([]), np.array([])
+        val_ratio = val_size
 
     # Split remaining into train and val
-    val_ratio = val_size / (1 - test_size)
-    x_train, x_val, y_train, y_val = train_test_split(
-        x_temp,
-        y_temp,
-        test_size=val_ratio,
-        random_state=random_state,
-        stratify=y_temp,
-    )
+    if val_ratio > 0:
+        x_train, x_val, y_train, y_val = train_test_split(
+            x_temp,
+            y_temp,
+            test_size=val_ratio,
+            random_state=random_state,
+            stratify=y_temp,
+        )
+    else:
+        x_train, y_train = x_temp, y_temp
+        x_val, y_val = np.array([]), np.array([])
 
     logger.info(
         "Split: train=%d, val=%d, test=%d",
@@ -177,20 +187,32 @@ def main() -> None:
     output_dir = PROJECT_ROOT / "data" / "processed"
 
     # Load data
-    data, labels = load_moabb_data(
-        subjects=list(config.subjects),
-        fmin=config.preprocessing.low_freq,
-        fmax=config.preprocessing.high_freq,
-        resample=config.preprocessing.resample_freq,
+    # Load training data
+    train_data, train_labels = load_moabb_data(
+        subjects=list(config.train_subjects),
+        fmin=config.paradigm.fmin,
+        fmax=config.paradigm.fmax,
+        resample=config.paradigm.resample,
     )
 
-    # Split data
-    splits = split_data(
-        data,
-        labels,
-        test_size=config.split.test_size,
-        val_size=config.split.val_size,
+    # Load test data
+    test_data, test_labels = load_moabb_data(
+        subjects=list(config.test_subjects),
+        fmin=config.paradigm.fmin,
+        fmax=config.paradigm.fmax,
+        resample=config.paradigm.resample,
     )
+
+    # Split training into train/val
+    splits = split_data(
+        train_data,
+        train_labels,
+        test_size=0.0,  # No test split from training subjects
+        val_size=config.val_ratio,
+    )
+
+    # Add test split manually
+    splits["test"] = (test_data, test_labels)
 
     # Save
     save_splits(splits, output_dir)

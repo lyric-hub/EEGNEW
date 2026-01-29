@@ -25,7 +25,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from spikingjelly.activation_based import functional, layer, neuron, surrogate
+from spikingjelly.activation_based import base, functional, layer, neuron, surrogate
 
 from src.models.base import BaseModel
 
@@ -43,7 +43,7 @@ def get_lif(tau: float = 2.0, v_threshold: float = 1.0) -> neuron.LIFNode:
     )
 
 
-class SpikeRateRegularizer(nn.Module):
+class SpikeRateRegularizer(base.MemoryModule):
     """Spike rate regularization for controlling firing sparsity.
     
     Encourages neurons to fire at a target rate (e.g., 20-30%).

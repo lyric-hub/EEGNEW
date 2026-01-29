@@ -13,3 +13,45 @@ stages:
       hash: md5
       md5: 6dd51fe23b75be44c764d086fe8ae7ba
       size: 130
+  preprocess:
+    cmd: python scripts/preprocess.py
+    deps:
+    - path: config/data/default.yaml
+      hash: md5
+      md5: 47b0bc5248c0f7f537fbcb863de34e3c
+      size: 729
+      isexec: true
+    - path: data/raw/dataset_info.txt
+      hash: md5
+      md5: 6dd51fe23b75be44c764d086fe8ae7ba
+      size: 130
+    - path: scripts/preprocess.py
+      hash: md5
+      md5: 663fc6c84791bff92d594c1fd8bfbd21
+      size: 5794
+      isexec: true
+    outs:
+    - path: data/processed/test/data.npy
+      hash: md5
+      md5: 9e454ca77420eb6b1b477a77850f414f
+      size: 50738816
+    - path: data/processed/test/labels.npy
+      hash: md5
+      md5: 0a9f9b6adba3d2607088c6734c6e87da
+      size: 4736
+    - path: data/processed/train/data.npy
+      hash: md5
+      md5: 0312a1c348c35e9e8845c4c65577962f
+      size: 365301064
+    - path: data/processed/train/labels.npy
+      hash: md5
+      md5: 121e9e3a9a1e8fd872f21808ab0cd74b
+      size: 33304
+    - path: data/processed/val/data.npy
+      hash: md5
+      md5: b2ef8080e0f5b11d99e463ee217ae3e7
+      size: 40608696
+    - path: data/processed/val/labels.npy
+      hash: md5
+      md5: 716711127305a98bad58cb27ce0c1255
+      size: 3816
