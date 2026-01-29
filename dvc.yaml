@@ -7,7 +7,8 @@ stages:
     deps:
       - scripts/download_data.py
     outs:
-      - data/raw/dataset_info.txt
+      - data/raw/dataset_info.txt:
+          cache: false
 
   preprocess:
     cmd: python scripts/preprocess.py
@@ -16,12 +17,18 @@ stages:
       - config/data/default.yaml
       - data/raw/dataset_info.txt
     outs:
-      - data/processed/train/data.npy
-      - data/processed/train/labels.npy
-      - data/processed/val/data.npy
-      - data/processed/val/labels.npy
-      - data/processed/test/data.npy
-      - data/processed/test/labels.npy
+      - data/processed/train/data.npy:
+          cache: false
+      - data/processed/train/labels.npy:
+          cache: false
+      - data/processed/val/data.npy:
+          cache: false
+      - data/processed/val/labels.npy:
+          cache: false
+      - data/processed/test/data.npy:
+          cache: false
+      - data/processed/test/labels.npy:
+          cache: false
 
   train:
     cmd: python scripts/train.py training.logging.use_mlflow=true
