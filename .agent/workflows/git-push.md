@@ -10,17 +10,17 @@ When invoked, analyze the staged changes and push to remote with a relevant comm
 
 1. Check git status to see what files have changed:
    ```bash
-   cd /home/cyril-saju/Documents/LyjuShyam && git status --short
+   cd /home/lyju/EEGNEW && git status --short
    ```
 
 2. View the diff to understand the changes:
    ```bash
-   cd /home/cyril-saju/Documents/LyjuShyam && git diff --stat
+   cd /home/lyju/EEGNEW && git diff --stat
    ```
 
 3. Stage all changes:
    ```bash
-   cd /home/cyril-saju/Documents/LyjuShyam && git add .
+   cd /home/lyju/EEGNEW && git add .
    ```
 
 4. Based on the changes, generate a relevant commit message following this format:

@@ -1,0 +1,15 @@
+schema: '2.0'
+stages:
+  download:
+    cmd: python scripts/download_data.py
+    deps:
+    - path: scripts/download_data.py
+      hash: md5
+      md5: b7fdd792a5ba62d5a67391ec743aa49f
+      size: 2614
+      isexec: true
+    outs:
+    - path: data/raw/dataset_info.txt
+      hash: md5
+      md5: 6dd51fe23b75be44c764d086fe8ae7ba
+      size: 130
