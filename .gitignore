@@ -80,9 +80,12 @@ models/checkpoints/
 # =============================================================================
 # MLflow / Experiment Tracking
 # =============================================================================
-mlruns/
-mlflow.db
-mlartifacts/
+# mlruns/        # Tracked by Git (metrics/params)
+!mlruns/
+mlruns/**/artifacts/  # Ignore models in MLflow
+# mlflow.db     # Tracked by Git
+!mlflow.db
+mlartifacts/  # Still ignored (external artifacts)
 
 # =============================================================================
 # Outputs / Logs
