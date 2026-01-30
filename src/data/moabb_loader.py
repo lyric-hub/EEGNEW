@@ -14,7 +14,6 @@ import torch
 from moabb.datasets import BNCI2014_001
 from moabb.paradigms import MotorImagery
 from omegaconf import DictConfig
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -35,7 +34,6 @@ def load_moabb_data(
     Returns:
         Tuple of (train_loader, val_loader, test_loader).
     """
-    # Initialize dataset
     dataset = BNCI2014_001()
 
     # Configure paradigm from config
@@ -50,51 +48,44 @@ def load_moabb_data(
         resample=paradigm_config.resample,
     )
 
-    # Load training data (subjects 1-8)
+    # Load training data
     train_subjects = list(config.data.train_subjects)
     logger.info("Loading training data for subjects: %s", train_subjects)
     X_train, y_train, _ = paradigm.get_data(dataset, subjects=train_subjects)
 
-    # Load test data (subject 9)
+    # Load validation data from separate subjects (subject-independent)
+    val_subjects = list(config.data.val_subjects)
+    logger.info("Loading validation data for subjects: %s", val_subjects)
+    X_val, y_val, _ = paradigm.get_data(dataset, subjects=val_subjects)
+
+    # Load test data
     test_subjects = list(config.data.test_subjects)
     logger.info("Loading test data for subjects: %s", test_subjects)
     X_test, y_test, _ = paradigm.get_data(dataset, subjects=test_subjects)
 
     # Encode labels to integers
     label_encoder = LabelEncoder()
-    label_encoder.fit(np.concatenate([y_train, y_test]))
+    label_encoder.fit(np.concatenate([y_train, y_val, y_test]))
     y_train_encoded = label_encoder.transform(y_train)
+    y_val_encoded = label_encoder.transform(y_val)
     y_test_encoded = label_encoder.transform(y_test)
 
     logger.info("Classes: %s", label_encoder.classes_)
-    logger.info("Train data shape: %s, labels: %s", X_train.shape, y_train_encoded.shape)
-    logger.info("Test data shape: %s, labels: %s", X_test.shape, y_test_encoded.shape)
-
-    # Split training data into train/val
-    val_ratio = config.data.val_ratio
-    X_train_split, X_val, y_train_split, y_val = train_test_split(
-        X_train,
-        y_train_encoded,
-        test_size=val_ratio,
-        stratify=y_train_encoded,
-        random_state=config.seed,
-    )
-
     logger.info(
-        "After split - Train: %d, Val: %d, Test: %d",
-        len(X_train_split),
+        "Train: %d, Val: %d, Test: %d",
+        len(X_train),
         len(X_val),
         len(X_test),
     )
 
     # Create PyTorch tensors
     train_dataset = TensorDataset(
-        torch.from_numpy(X_train_split.astype(np.float32)),
-        torch.from_numpy(y_train_split.astype(np.int64)),
+        torch.from_numpy(X_train.astype(np.float32)),
+        torch.from_numpy(y_train_encoded.astype(np.int64)),
     )
     val_dataset = TensorDataset(
         torch.from_numpy(X_val.astype(np.float32)),
-        torch.from_numpy(y_val.astype(np.int64)),
+        torch.from_numpy(y_val_encoded.astype(np.int64)),
     )
     test_dataset = TensorDataset(
         torch.from_numpy(X_test.astype(np.float32)),
