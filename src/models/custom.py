@@ -1,621 +1,594 @@
-"""S-MSTT v2: Enhanced Spiking Multilevel Spatio-Temporal Transformer.
+"""
+S-MSTT v3.1: Spiking Multilevel Spatio-Temporal Transformer
+Subject-Independent EEG Classification
 
-Improvements from three expert perspectives:
+Final production-ready version.
 
-SIGNAL ENGINEER:
-- ERD window focus (0.5s-3.5s) - captures motor imagery dynamics
-- Channel attention - emphasizes motor cortex (C3, Cz, C4)
-- Frequency-aligned kernels - matches EEG rhythm timescales
-
-MATHEMATICIAN:
-- Increased capacity (f1=32, feature_dim=64)
-- Longer receptive field (dilations 1,2,4,8)
-- Better gradient flow (skip connections)
-- Proper information preservation
-
-ARCHITECT:
-- Cleaner module design
-- Configurable preprocessing
-- Modular dual-stream
-- Spike rate regularization support
+Features:
+- SVD-based Euclidean Alignment for subject independence
+- Multi-scale temporal encoding (Mu/Beta/Gamma rhythms)
+- Spiking Self-Attention with gradient-preserving residual
+- LayerNorm for correct dimension handling
+- Complete spike rate tracking across all LIF neurons
+- Learned temporal aggregation over SNN timesteps
 """
 
 from __future__ import annotations
 
+import logging
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from spikingjelly.activation_based import base, functional, layer, neuron, surrogate
+from spikingjelly.activation_based import functional, neuron, surrogate
 
 from src.models.base import BaseModel
 
-
-SURROGATE_FUNCTION = surrogate.Sigmoid(alpha=4.0)
-
-
-def get_lif(tau: float = 2.0, v_threshold: float = 1.0) -> neuron.LIFNode:
-    """Create a LIF neuron with specified parameters."""
-    return neuron.LIFNode(
-        tau=tau,
-        v_threshold=v_threshold,
-        surrogate_function=SURROGATE_FUNCTION,
-        detach_reset=True,
-    )
+logger = logging.getLogger(__name__)
 
 
-class SpikeRateRegularizer(base.MemoryModule):
-    """Spike rate regularization for controlling firing sparsity.
-    
-    Encourages neurons to fire at a target rate (e.g., 20-30%).
-    Too low = dead neurons, too high = no sparsity benefit.
-    
-    Loss = λ * (mean_spike_rate - target_rate)²
-    """
-    
+# =============================================================================
+# SPIKE RATE TRACKING
+# =============================================================================
+
+
+class SpikeRateTracker:
+    """Tracks spike rates from all LIF neurons for regularization."""
+
     def __init__(self, target_rate: float = 0.25, weight: float = 1.0) -> None:
-        super().__init__()
         self.target_rate = target_rate
         self.weight = weight
-        self.spike_counts = []
-    
+        self.spike_counts: list[torch.Tensor] = []
+        self.layer_rates: dict[str, list[float]] = {}
+
     def reset(self) -> None:
-        """Reset spike counts for new forward pass."""
         self.spike_counts = []
-    
-    def record(self, spikes: torch.Tensor) -> torch.Tensor:
-        """Record spikes and return them unchanged (for inline use)."""
-        self.spike_counts.append(spikes.detach().mean())
+        self.layer_rates = {}
+
+    def record(self, spikes: torch.Tensor, layer_name: str = "default") -> torch.Tensor:
+        rate = spikes.detach().mean()
+        self.spike_counts.append(rate)
+        if layer_name not in self.layer_rates:
+            self.layer_rates[layer_name] = []
+        self.layer_rates[layer_name].append(rate.item())
         return spikes
-    
+
     def get_loss(self) -> torch.Tensor:
-        """Compute spike rate regularization loss."""
         if not self.spike_counts:
             return torch.tensor(0.0)
-        
         mean_rate = torch.stack(self.spike_counts).mean()
-        loss = self.weight * (mean_rate - self.target_rate) ** 2
-        return loss
-    
+        return self.weight * (mean_rate - self.target_rate) ** 2
+
     def get_mean_rate(self) -> float:
-        """Get current mean spike rate."""
         if not self.spike_counts:
             return 0.0
         return torch.stack(self.spike_counts).mean().item()
 
+    def get_layer_rates(self) -> dict[str, float]:
+        return {k: sum(v) / len(v) for k, v in self.layer_rates.items() if v}
+
 
 # =============================================================================
-# SIGNAL PROCESSING COMPONENTS
+# EUCLIDEAN ALIGNMENT
 # =============================================================================
 
-class EEGPreprocessing(nn.Module):
-    """Signal-aware EEG preprocessing.
-    
-    - Crops to ERD window (motor imagery active period)
-    - Applies channel attention (emphasizes motor cortex)
-    - Normalizes per-channel
-    """
-    
-    # Motor cortex channels for BNCI2014_001
-    MOTOR_CHANNELS = [6, 7, 8, 9, 10, 11, 12]  # C5, C3, C1, Cz, C2, C4, C6
-    
+
+class EuclideanAlignment(nn.Module):
+    """SVD-based Euclidean Alignment for subject independence."""
+
     def __init__(
         self,
-        n_channels: int = 22,
-        sample_rate: int = 250,
-        erd_start: float = 0.5,
-        erd_end: float = 3.5,
-        use_channel_attention: bool = True,
+        channels: int,
+        momentum: float = 0.1,
+        warmup_batches: int = 10,
     ) -> None:
         super().__init__()
-        self.start_idx = int(erd_start * sample_rate)
-        self.end_idx = int(erd_end * sample_rate)
-        self.use_channel_attention = use_channel_attention
-        
-        if use_channel_attention:
-            # Learnable channel attention
-            self.ch_attention = nn.Parameter(torch.ones(n_channels))
-            # Initialize with motor cortex emphasis
-            with torch.no_grad():
-                for idx in self.MOTOR_CHANNELS:
-                    if idx < n_channels:
-                        self.ch_attention[idx] = 2.0
-    
+        self.momentum = momentum
+        self.warmup_batches = warmup_batches
+        self.register_buffer("running_R", torch.eye(channels))
+        self.register_buffer("num_batches_tracked", torch.tensor(0, dtype=torch.long))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply preprocessing.
-        
-        Args:
-            x: (batch, channels, time)
-        Returns:
-            Preprocessed tensor
-        """
-        # Crop to ERD window
-        x = x[:, :, self.start_idx:self.end_idx]
-        
-        # Channel attention
-        if self.use_channel_attention:
-            attn = F.softmax(self.ch_attention, dim=0).view(1, -1, 1)
-            x = x * attn
-        
-        # Per-channel normalization (robust to outliers)
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True).clamp(min=1e-6)
-        x = (x - mean) / std
-        
-        return x
+        if x.dim() == 4:
+            x = x.squeeze(1)
+
+        B, C, T = x.shape
+        x_mean = x.mean(dim=2, keepdim=True)
+        x_centered = x - x_mean
+
+        batch_cov = torch.bmm(x_centered, x_centered.transpose(1, 2)) / max(T - 1, 1)
+        R_batch = batch_cov.mean(dim=0)
+
+        if self.training:
+            with torch.no_grad():
+                self.num_batches_tracked += 1
+                self.running_R = (
+                    (1 - self.momentum) * self.running_R
+                    + self.momentum * R_batch.detach()
+                )
+            if self.num_batches_tracked < self.warmup_batches:
+                return x.unsqueeze(1)
+
+        R = self.running_R.detach()
+        try:
+            U, S, Vh = torch.linalg.svd(R)
+            S = torch.clamp(S, min=1e-5)
+            whitening_mat = U @ torch.diag(S.pow(-0.5)) @ Vh
+        except RuntimeError as e:
+            logger.warning(f"SVD failed, using identity matrix: {e}")
+            whitening_mat = torch.eye(C, device=x.device)
+
+        x_aligned = torch.matmul(whitening_mat, x_centered)
+        return x_aligned.unsqueeze(1)
 
 
-class FrequencyAlignedEncoder(nn.Module):
-    """Multi-scale spike encoder with EEG-rhythm-aligned kernels.
-    
-    Kernel sizes correspond to EEG frequency bands:
-    - 25 samples @ 250Hz = 100ms (Alpha/Mu: 8-12 Hz)
-    - 13 samples @ 250Hz = 52ms (Beta: 15-25 Hz)
-    - 6 samples @ 250Hz = 24ms (Gamma: 30-45 Hz)
-    """
-    
+# =============================================================================
+# CHANNEL ATTENTION
+# =============================================================================
+
+
+class ChannelAttention(nn.Module):
+    """Learnable channel attention with optional motor cortex bias."""
+
+    def __init__(
+        self,
+        n_channels: int,
+        motor_indices: Optional[list[int]] = None,
+    ) -> None:
+        super().__init__()
+        self.attention = nn.Parameter(torch.ones(n_channels))
+        if motor_indices:
+            with torch.no_grad():
+                for idx in motor_indices:
+                    if idx < n_channels:
+                        self.attention[idx] = 2.0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        attn = F.softmax(self.attention, dim=0).view(1, 1, -1, 1)
+        return x * attn
+
+
+# =============================================================================
+# MULTI-SCALE ENCODER
+# =============================================================================
+
+
+class MultiScaleTemporalEncoder(nn.Module):
+    """Mu/Beta/Gamma rhythm-aligned encoding."""
+
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         sample_rate: int = 250,
         tau: float = 2.0,
-        v_threshold: float = 1.0,
     ) -> None:
         super().__init__()
-        
-        # Frequency-aligned kernel sizes (must be ODD for same-padding)
-        kernel_mu = self._make_odd(int(0.1 * sample_rate))      # ~100ms for mu rhythm
-        kernel_beta = self._make_odd(int(0.05 * sample_rate))   # ~50ms for beta
-        kernel_gamma = self._make_odd(int(0.025 * sample_rate)) # ~25ms for gamma
-        
-        self.kernels = [kernel_gamma, kernel_beta, kernel_mu]
-        
+        kernel_mu = self._make_odd(int(0.1 * sample_rate))
+        kernel_beta = self._make_odd(int(0.05 * sample_rate))
+        kernel_gamma = self._make_odd(int(0.025 * sample_rate))
+
         self.branches = nn.ModuleList([
             nn.Sequential(
-                layer.Conv2d(
-                    in_channels, out_channels,
-                    kernel_size=(1, k),
-                    padding=(0, k // 2),
-                    bias=False,
-                ),
+                nn.Conv2d(in_channels, out_channels, (1, k), padding=(0, k // 2), bias=False),
                 nn.BatchNorm2d(out_channels),
-                get_lif(tau, v_threshold),
+                neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan()),
             )
-            for k in self.kernels
+            for k in [kernel_gamma, kernel_beta, kernel_mu]
         ])
-        
-        # Learnable fusion weights
         self.fusion_weights = nn.Parameter(torch.ones(3) / 3)
-    
+        self.names = ["gamma", "beta", "mu"]
+
     @staticmethod
     def _make_odd(n: int) -> int:
-        """Ensure kernel size is odd (for symmetric padding)."""
         return max(3, n if n % 2 == 1 else n + 1)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+    def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
         weights = F.softmax(self.fusion_weights, dim=0)
-        outputs = [branch(x) * w for branch, w in zip(self.branches, weights)]
+        outputs = []
+        for i, (branch, w) in enumerate(zip(self.branches, weights)):
+            out = branch(x) * w
+            if tracker:
+                tracker.record(out, f"enc_{self.names[i]}")
+            outputs.append(out)
         return sum(outputs)
 
 
 # =============================================================================
-# SPATIAL PROCESSING
+# SPIKING SELF-ATTENTION
 # =============================================================================
-
-class SpatialAttentionConv(nn.Module):
-    """Spatial convolution with attention-weighted channel pooling.
-    
-    Instead of collapsing 22→1 immediately, we:
-    1. Apply depthwise conv to extract per-channel features
-    2. Use attention to weight channels
-    3. Reduce to fewer spatial dims (22→4) preserving some topology
-    """
-    
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        n_spatial: int = 22,
-        n_spatial_out: int = 4,
-        tau: float = 2.0,
-        v_threshold: float = 1.0,
-    ) -> None:
-        super().__init__()
-        self.n_spatial_out = n_spatial_out
-        
-        # Depthwise spatial feature extraction
-        self.depthwise = layer.Conv2d(
-            in_channels, in_channels,
-            kernel_size=(n_spatial, 1),
-            groups=in_channels,
-            bias=False,
-        )
-        self.bn1 = nn.BatchNorm2d(in_channels)
-        self.lif1 = get_lif(tau, v_threshold)
-        
-        # Pointwise to expand channels
-        self.pointwise = layer.Conv2d(
-            in_channels, out_channels,
-            kernel_size=(1, 1),
-            bias=False,
-        )
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.lif2 = get_lif(tau, v_threshold)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C_in, H=22, T)
-        out = self.depthwise(x)  # (B, C_in, 1, T)
-        out = self.bn1(out)
-        out = self.lif1(out)
-        
-        out = self.pointwise(out)  # (B, C_out, 1, T)
-        out = self.bn2(out)
-        out = self.lif2(out)
-        
-        return out.squeeze(2)  # (B, C_out, T)
-
-
-class SpatialSkipConv(nn.Module):
-    """Skip connection with 1×1 conv to preserve spatial info.
-    
-    Instead of mean(dim=2), we use a learned 1×1 conv that:
-    1. Collapses spatial dim with learned weights
-    2. Projects to target feature dimension
-    """
-    
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        n_spatial: int = 22,
-    ) -> None:
-        super().__init__()
-        # Collapse spatial dimension with learned weights
-        self.spatial_collapse = nn.Conv2d(
-            in_channels, in_channels,
-            kernel_size=(n_spatial, 1),
-            bias=False,
-        )
-        # Project to output dimension
-        self.proj = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm1d(out_channels)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C_in, H=n_spatial, T)
-        out = self.spatial_collapse(x)  # (B, C_in, 1, T)
-        out = out.squeeze(2)  # (B, C_in, T)
-        out = self.proj(out)  # (B, C_out, T)
-        out = self.bn(out)
-        return out
-
-
-# =============================================================================
-# TEMPORAL PROCESSING
-# =============================================================================
-
-class LongRangeTCN(nn.Module):
-    """Multi-dilation TCN with extended receptive field.
-    
-    Dilations: 1, 2, 4, 8 gives receptive field of:
-    r = 1 + (k-1)*Σd = 1 + 2*(1+2+4+8) = 31 samples = 124ms @ 250Hz
-    
-    With skip connections for better gradient flow.
-    """
-    
-    def __init__(
-        self,
-        channels: int,
-        kernel_size: int = 3,
-        dilations: tuple = (1, 2, 4, 8),
-        dropout: float = 0.1,
-        tau: float = 2.0,
-        v_threshold: float = 1.0,
-    ) -> None:
-        super().__init__()
-        self.blocks = nn.ModuleList()
-        self.paddings = []
-        
-        for d in dilations:
-            padding = (kernel_size - 1) * d
-            self.paddings.append(padding)
-            self.blocks.append(
-                nn.Sequential(
-                    layer.Conv1d(
-                        channels, channels,
-                        kernel_size=kernel_size,
-                        dilation=d,
-                        padding=padding,
-                        bias=False,
-                    ),
-                    nn.BatchNorm1d(channels),
-                    get_lif(tau, v_threshold),
-                    nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-                )
-            )
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for block, padding in zip(self.blocks, self.paddings):
-            residual = x
-            out = block(x)
-            if padding > 0:
-                out = out[:, :, :-padding]
-            x = out + residual  # Skip connection
-        return x
 
 
 class SpikingSelfAttention(nn.Module):
-    """Memory-efficient spiking self-attention."""
-    
+    """Spiking attention with gradient-preserving residual."""
+
     def __init__(
         self,
-        embed_dim: int,
+        dim: int,
         num_heads: int = 4,
-        dropout: float = 0.1,
-        pool_size: int = 8,
         tau: float = 2.0,
-        v_threshold: float = 1.0,
+        dropout: float = 0.1,
+        attn_residual_ratio: float = 0.1,
     ) -> None:
         super().__init__()
+        assert dim % num_heads == 0
+        self.dim = dim
         self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
+        self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
-        
-        self.pool = nn.AvgPool1d(pool_size, stride=pool_size) if pool_size > 1 else None
-        
-        self.qkv = layer.Conv1d(embed_dim, embed_dim * 3, kernel_size=1, bias=False)
-        self.qkv_lif = get_lif(tau, v_threshold)
-        
+        self.attn_residual_ratio = attn_residual_ratio
+
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+
+        self.q_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.k_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.v_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.attn_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+
+        self.proj_out = nn.Linear(dim, dim, bias=False)
+        self.proj_norm = nn.LayerNorm(dim)
+        self.proj_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
         self.dropout = nn.Dropout(dropout)
-        
-        self.out_proj = layer.Conv1d(embed_dim, embed_dim, kernel_size=1, bias=False)
-        self.out_bn = nn.BatchNorm1d(embed_dim)
-        self.out_lif = get_lif(tau, v_threshold)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, T = x.shape
-        orig_T = T
-        
-        if self.pool:
-            x = self.pool(x)
-            T = x.size(-1)
-        
-        qkv = self.qkv_lif(self.qkv(x))
-        qkv = qkv.view(B, 3, self.num_heads, self.head_dim, T)
-        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]
-        
-        # Attention
-        attn = (q.permute(0, 1, 3, 2) @ k) * self.scale
-        attn = self.dropout(attn)
-        
-        out = (attn @ v.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
-        out = out.reshape(B, C, T)
-        
-        out = self.out_proj(out)
-        out = self.out_bn(out)
-        out = self.out_lif(out)
-        
-        if self.pool:
-            out = F.interpolate(out, size=orig_T, mode='nearest')
-        
+
+    def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
+        T, B, N, D = x.shape
+
+        q = self.q_lif(self.q_proj(x))
+        k = self.k_lif(self.k_proj(x))
+        v = self.v_lif(self.v_proj(x))
+
+        if tracker:
+            tracker.record(q, "ssa_q")
+            tracker.record(k, "ssa_k")
+            tracker.record(v, "ssa_v")
+
+        q = q.reshape(T, B, N, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+        k = k.reshape(T, B, N, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+        v = v.reshape(T, B, N, self.num_heads, self.head_dim).permute(0, 1, 3, 2, 4)
+
+        attn_score = (q @ k.transpose(-2, -1)) * self.scale
+
+        if self.attn_residual_ratio > 0:
+            attn_soft = torch.sigmoid(attn_score)
+            attn_spike = self.attn_lif(attn_score)
+            r = self.attn_residual_ratio
+            attn_out = (1 - r) * attn_spike + r * attn_soft
+        else:
+            attn_out = self.attn_lif(attn_score)
+
+        if tracker:
+            tracker.record(attn_out, "ssa_attn")
+
+        attn_out = self.dropout(attn_out)
+        out = attn_out @ v
+        out = out.permute(0, 1, 3, 2, 4).reshape(T, B, N, D)
+
+        out = self.proj_out(out)
+        out = self.proj_norm(out)
+        out = self.proj_lif(out)
+
+        if tracker:
+            tracker.record(out, "ssa_proj")
+
         return out
 
 
 # =============================================================================
-# FUSION AND CLASSIFICATION
+# SPIKING MLP
 # =============================================================================
 
-class GatedFusion(nn.Module):
-    """Learnable gated fusion with residual."""
-    
-    def __init__(self, channels: int) -> None:
+
+class SpikingMLP(nn.Module):
+    """Feed-forward with LayerNorm."""
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: Optional[int] = None,
+        dropout: float = 0.1,
+        tau: float = 2.0,
+    ) -> None:
         super().__init__()
-        self.gate = nn.Sequential(
-            nn.Conv1d(channels * 2, channels, kernel_size=1, bias=False),
-            nn.BatchNorm1d(channels),
-            nn.Sigmoid(),
-        )
-    
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        gate = self.gate(torch.cat([a, b], dim=1))
-        return a * gate + b * (1 - gate)
+        hidden_features = hidden_features or in_features * 4
+
+        self.fc1 = nn.Linear(in_features, hidden_features, bias=False)
+        self.norm1 = nn.LayerNorm(hidden_features)
+        self.lif1 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+
+        self.fc2 = nn.Linear(hidden_features, in_features, bias=False)
+        self.norm2 = nn.LayerNorm(in_features)
+        self.lif2 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
+        out = self.fc1(x)
+        out = self.norm1(out)
+        out = self.lif1(out)
+        if tracker:
+            tracker.record(out, "mlp_lif1")
+        out = self.drop(out)
+
+        out = self.fc2(out)
+        out = self.norm2(out)
+        out = self.lif2(out)
+        if tracker:
+            tracker.record(out, "mlp_lif2")
+
+        return out
 
 
-class ClassifierHead(nn.Module):
-    """Classification head with spike rate output."""
-    
+# =============================================================================
+# TRANSFORMER BLOCK
+# =============================================================================
+
+
+class SBlock(nn.Module):
+    """Transformer block with spike tracking."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 4,
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.1,
+        tau: float = 2.0,
+        attn_residual_ratio: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.attn = SpikingSelfAttention(dim, num_heads, tau, dropout, attn_residual_ratio)
+        self.mlp = SpikingMLP(dim, int(dim * mlp_ratio), dropout, tau)
+
+    def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
+        x = x + self.attn(x, tracker)
+        x = x + self.mlp(x, tracker)
+        return x
+
+
+# =============================================================================
+# TOKENIZER
+# =============================================================================
+
+
+class SpatioTemporalTokenizer(nn.Module):
+    """Converts EEG to spike tokens."""
+
     def __init__(
         self,
         in_channels: int,
-        num_classes: int,
-        dropout: float = 0.2,
+        embed_dim: int = 64,
+        time_points: int = 1125,
         tau: float = 2.0,
-        v_threshold: float = 1.0,
     ) -> None:
         super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        self.conv = layer.Conv1d(in_channels, num_classes, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm1d(num_classes)
-        self.lif = get_lif(tau, v_threshold)
-    
+        self.spatial_conv = nn.Conv2d(1, embed_dim, (in_channels, 1), bias=False)
+        self.bn1 = nn.BatchNorm2d(embed_dim)
+        self.lif1 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+
+        self.temporal_conv = nn.Conv2d(embed_dim, embed_dim, (1, 25), stride=(1, 5), padding=(0, 12), bias=False)
+        self.bn2 = nn.BatchNorm2d(embed_dim)
+        self.lif2 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+
+        self.pool = nn.AvgPool2d((1, 4))
+        self.seq_len = time_points // (5 * 4)
+
+    def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
+        x = self.lif1(self.bn1(self.spatial_conv(x)))
+        if tracker:
+            tracker.record(x, "tok_spatial")
+
+        x = self.lif2(self.bn2(self.temporal_conv(x)))
+        if tracker:
+            tracker.record(x, "tok_temporal")
+
+        x = self.pool(x)
+        return x.squeeze(2).permute(0, 2, 1)
+
+
+# =============================================================================
+# LEARNED TEMPORAL AGGREGATION
+# =============================================================================
+
+
+class LearnedTemporalAggregation(nn.Module):
+    """Attention-based aggregation over SNN time steps."""
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(dim, 1)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.dropout(x)
-        out = self.conv(out)
-        out = self.bn(out)
-        out = self.lif(out)
-        return out.mean(dim=-1)
+        T, B, N, D = x.shape
+        x_mean = x.mean(dim=2)
+        scores = self.proj(x_mean).squeeze(-1)
+        weights = F.softmax(scores, dim=0).unsqueeze(-1).unsqueeze(-1)
+        return (x * weights).sum(dim=0)
 
 
 # =============================================================================
 # MAIN MODEL
 # =============================================================================
 
+
 class CustomModel(BaseModel):
-    """S-MSTT v2: Enhanced Spiking Multilevel Spatio-Temporal Transformer.
-    
-    Improvements:
-    - Signal: ERD window, channel attention, frequency-aligned encoding
-    - Math: Increased capacity, longer receptive field, skip connections
-    - Arch: Cleaner design, spike rate tracking
     """
-    
+    S-MSTT v3.1: Spiking Multilevel Spatio-Temporal Transformer
+    Subject-Independent EEG Classification
+
+    Args:
+        n_channels: Number of EEG channels
+        n_samples: Number of time samples per trial
+        n_classes: Number of output classes
+        embed_dim: Embedding dimension
+        depth: Number of transformer blocks
+        num_heads: Number of attention heads
+        mlp_ratio: MLP hidden dim ratio
+        t_steps: SNN simulation time steps
+        tau: LIF neuron time constant
+        dropout_rate: Dropout rate
+        use_alignment: Enable Euclidean Alignment
+        use_channel_attention: Enable channel attention
+        use_multiscale: Enable multi-scale encoding
+        use_learned_aggregation: Enable learned temporal aggregation
+        alignment_momentum: EA momentum value
+        spike_target_rate: Target spike rate for regularization
+        attn_residual_ratio: Soft attention mix ratio for gradient flow
+        motor_indices: Channel indices for motor cortex attention bias
+    """
+
     def __init__(
         self,
         n_channels: int = 22,
-        n_samples: int = 1126,
+        n_samples: int = 1125,
         n_classes: int = 4,
-        t_steps: int = 8,
+        embed_dim: int = 64,
+        depth: int = 4,
+        num_heads: int = 4,
+        mlp_ratio: float = 4.0,
+        t_steps: int = 4,
+        tau: float = 2.0,
+        dropout_rate: float = 0.1,
+        use_alignment: bool = True,
+        use_channel_attention: bool = True,
+        use_multiscale: bool = True,
+        use_learned_aggregation: bool = True,
+        alignment_momentum: float = 0.1,
+        spike_target_rate: float = 0.25,
+        attn_residual_ratio: float = 0.1,
+        motor_indices: Optional[list[int]] = None,
+        # Legacy compatibility args (unused in v3.1)
         f1: int = 32,
         depth_multiplier: int = 2,
-        num_heads: int = 4,
         tcn_dilations: tuple = (1, 2, 4, 8),
-        dropout_rate: float = 0.2,
         attention_pool: int = 8,
-        tau: float = 4.0,
         v_threshold: float = 1.0,
         use_preprocessing: bool = True,
         sample_rate: int = 250,
-        # Compatibility args (unused)
         hidden_dim: int = 128,
         tcn_dilation: int = 2,
         spatial_type: str = "depthwise",
         learnable_adj: bool = False,
     ) -> None:
         super().__init__(n_channels, n_samples, n_classes)
+
         self.t_steps = t_steps
-        self.use_preprocessing = use_preprocessing
-        
-        # 0. Signal-aware preprocessing
-        if use_preprocessing:
-            self.preprocess = EEGPreprocessing(
-                n_channels=n_channels,
-                sample_rate=sample_rate,
-                erd_start=0.5,
-                erd_end=3.5,
-            )
-            effective_samples = int(3.0 * sample_rate)  # 750 samples
+        self.input_channels = n_channels
+        self.use_multiscale = use_multiscale
+        self.use_learned_aggregation = use_learned_aggregation
+
+        # Default motor indices for BNCI2014_001
+        if motor_indices is None:
+            motor_indices = [6, 7, 8, 9, 10, 11, 12]
+
+        # 1. Alignment
+        self.align = EuclideanAlignment(n_channels, alignment_momentum) if use_alignment else nn.Identity()
+
+        # 2. Channel Attention
+        self.ch_attn = ChannelAttention(n_channels, motor_indices) if use_channel_attention else nn.Identity()
+
+        # 3. Encoding
+        if use_multiscale:
+            self.encoder = MultiScaleTemporalEncoder(1, embed_dim, tau=tau)
+            self.spatial_collapse = nn.Conv2d(embed_dim, embed_dim, (n_channels, 1), bias=False)
+            self.spatial_bn = nn.BatchNorm2d(embed_dim)
+            self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+            self.temporal_pool = nn.AvgPool2d((1, 4))
+            self.seq_len = n_samples // 4
+            self.tokenizer = None
         else:
-            self.preprocess = None
-            effective_samples = n_samples
-        
-        # 1. Frequency-aligned spike encoder
-        self.encoder = FrequencyAlignedEncoder(
-            in_channels=1,
-            out_channels=f1,
-            sample_rate=sample_rate,
-            tau=tau,
-            v_threshold=v_threshold,
-        )
-        
-        feature_dim = f1 * depth_multiplier
-        
-        # 2. Spatial processing
-        self.spatial = SpatialAttentionConv(
-            in_channels=f1,
-            out_channels=feature_dim,
-            n_spatial=n_channels,
-            tau=tau,
-            v_threshold=v_threshold,
-        )
-        
-        # 3. Dual-stream temporal processing
-        self.tcn = LongRangeTCN(
-            channels=feature_dim,
-            kernel_size=3,
-            dilations=tcn_dilations,
-            dropout=dropout_rate,
-            tau=tau,
-            v_threshold=v_threshold,
-        )
-        
-        self.attention = SpikingSelfAttention(
-            embed_dim=feature_dim,
-            num_heads=num_heads,
-            dropout=dropout_rate,
-            pool_size=attention_pool,
-            tau=tau,
-            v_threshold=v_threshold,
-        )
-        
-        # 4. Gated fusion
-        self.fusion = GatedFusion(channels=feature_dim)
-        
-        # 5. Skip connection with learned spatial projection (instead of mean)
-        self.skip_conv = SpatialSkipConv(
-            in_channels=f1,
-            out_channels=feature_dim,
-            n_spatial=n_channels,
-        )
-        
-        # 6. Classification head
-        self.classifier = ClassifierHead(
-            in_channels=feature_dim,
-            num_classes=n_classes,
-            dropout=dropout_rate,
-            tau=tau,
-            v_threshold=v_threshold,
-        )
-        
-        # 7. Spike rate regularizer
-        self.spike_reg = SpikeRateRegularizer(
-            target_rate=0.25,  # 25% target firing rate
-            weight=1.0,
-        )
-    
+            self.encoder = None
+            self.tokenizer = SpatioTemporalTokenizer(n_channels, embed_dim, n_samples, tau)
+            self.seq_len = self.tokenizer.seq_len
+
+        # 4. Positional Embedding
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, embed_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
+        # 5. Transformer
+        self.blocks = nn.ModuleList([
+            SBlock(embed_dim, num_heads, mlp_ratio, dropout_rate, tau, attn_residual_ratio)
+            for _ in range(depth)
+        ])
+
+        # 6. Aggregation
+        self.temporal_agg = LearnedTemporalAggregation(embed_dim) if use_learned_aggregation else None
+
+        # 7. Head
+        self.norm = nn.LayerNorm(embed_dim)
+        self.head_drop = nn.Dropout(dropout_rate)
+        self.cls_head = nn.Linear(embed_dim, n_classes)
+
+        # 8. Tracker
+        self.spike_tracker = SpikeRateTracker(spike_target_rate, 1.0)
+
+        logger.info(f"S-MSTT v3.1 | seq_len={self.seq_len} | params={self.count_parameters():,}")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.size(0)
-        
-        # Reset spike rate tracking
-        self.spike_reg.reset()
-        
-        # 0. Preprocessing (ERD window, channel attention)
-        if self.preprocess is not None:
-            x = self.preprocess(x)
-        
-        # Add channel dim for 2D conv
-        x = x.unsqueeze(1)  # (B, 1, C, T)
-        
-        # Repeat for SNN timesteps
-        x_seq = x.unsqueeze(0).repeat(self.t_steps, 1, 1, 1, 1)
-        x_flat = x_seq.flatten(0, 1)  # (T*B, 1, C, T)
-        
-        # 1. Frequency-aligned encoding
-        encoded = self.encoder(x_flat)  # (T*B, f1, C, T)
-        self.spike_reg.record(encoded)  # Track spike rate
-        
-        # 2. Spatial processing
-        spatial = self.spatial(encoded)  # (T*B, feat_dim, T)
-        self.spike_reg.record(spatial)
-        
-        # 3. Skip connection with learned spatial projection
-        skip = self.skip_conv(encoded)  # (T*B, feat_dim, T)
-        
-        # 4. Dual-stream temporal
-        tcn_out = self.tcn(spatial)
-        self.spike_reg.record(tcn_out)
-        
-        attn_out = self.attention(spatial)
-        self.spike_reg.record(attn_out)
-        
-        # 5. Gated fusion + skip
-        fused = self.fusion(tcn_out, attn_out) + skip
-        
-        # 6. Classification (rate coding across timesteps)
-        fused = fused.view(self.t_steps, batch_size, -1, fused.size(-1))
-        
-        logits_per_step = []
-        for t in range(self.t_steps):
-            logits_per_step.append(self.classifier(fused[t]))
-        
-        return torch.stack(logits_per_step, dim=0).mean(dim=0)
-    
-    def get_spike_loss(self) -> torch.Tensor:
-        """Get spike rate regularization loss. Call after forward()."""
-        return self.spike_reg.get_loss()
-    
-    def get_spike_rate(self) -> float:
-        """Get current mean spike rate. Call after forward()."""
-        return self.spike_reg.get_mean_rate()
-    
-    def reset_snn_states(self) -> None:
-        """Reset all LIF neuron membrane potentials."""
+        # Input validation
+        if x.dim() == 3:
+            B, C, T = x.shape
+            assert C == self.input_channels, f"Expected {self.input_channels} channels, got {C}"
+            x = x.unsqueeze(1)
+        elif x.dim() == 4:
+            B, _, C, T = x.shape
+            assert C == self.input_channels, f"Expected {self.input_channels} channels, got {C}"
+        else:
+            raise ValueError(f"Expected 3D or 4D input, got {x.dim()}D")
+
         functional.reset_net(self)
+        self.spike_tracker.reset()
+
+        # 1. Alignment
+        x = self.align(x)
+
+        # 2. Channel Attention
+        x = self.ch_attn(x)
+
+        # 3. Tokenization
+        if self.use_multiscale:
+            x = self.encoder(x, self.spike_tracker)
+            x = self.spatial_lif(self.spatial_bn(self.spatial_collapse(x)))
+            self.spike_tracker.record(x, "spatial_collapse")
+            x = self.temporal_pool(x)
+            tokens = x.squeeze(2).permute(0, 2, 1)
+        else:
+            tokens = self.tokenizer(x, self.spike_tracker)
+
+        # Handle sequence length
+        B, N, D = tokens.shape
+        if N > self.seq_len:
+            tokens = tokens[:, :self.seq_len, :]
+        elif N < self.seq_len:
+            tokens = F.pad(tokens, (0, 0, 0, self.seq_len - N))
+
+        tokens = tokens + self.pos_embed
+
+        # 4. SNN Simulation
+        x_seq = tokens.unsqueeze(0).repeat(self.t_steps, 1, 1, 1)
+        for block in self.blocks:
+            x_seq = block(x_seq, self.spike_tracker)
+
+        # 5. Aggregation
+        x_out = self.temporal_agg(x_seq) if self.use_learned_aggregation else x_seq.mean(0)
+        x_gap = x_out.mean(1)
+
+        # 6. Classification
+        return self.cls_head(self.head_drop(self.norm(x_gap)))
+
+    def get_spike_loss(self) -> torch.Tensor:
+        return self.spike_tracker.get_loss()
+
+    def get_spike_rate(self) -> float:
+        return self.spike_tracker.get_mean_rate()
+
+    def get_layer_rates(self) -> dict[str, float]:
+        return self.spike_tracker.get_layer_rates()
+
+    def reset_snn_states(self) -> None:
+        functional.reset_net(self)
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)

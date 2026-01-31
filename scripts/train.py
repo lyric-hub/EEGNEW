@@ -41,7 +41,7 @@ def build_model(
     n_samples: int,
     n_classes: int,
 ) -> torch.nn.Module:
-    """Build S-MSTT model from configuration.
+    """Build S-MSTT v3.1 model from configuration.
 
     Args:
         config: Model configuration.
@@ -50,26 +50,32 @@ def build_model(
         n_classes: Number of classes from data.
 
     Returns:
-        Initialized S-MSTT model.
+        Initialized S-MSTT v3.1 model.
     """
     model = CustomModel(
         n_channels=n_channels,
         n_samples=n_samples,
         n_classes=n_classes,
-        t_steps=config.model.get("t_steps", 8),
-        f1=config.model.get("f1", 32),
-        depth_multiplier=config.model.get("depth_multiplier", 2),
+        # S-MSTT v3.1 parameters
+        embed_dim=config.model.get("embed_dim", 64),
+        depth=config.model.get("depth", 4),
         num_heads=config.model.get("num_heads", 4),
-        dropout_rate=config.model.get("dropout_rate", 0.2),
-        attention_pool=config.model.get("attention_pool", 8),
-        tau=config.model.get("tau", 4.0),
-        v_threshold=config.model.get("v_threshold", 1.0),
-        use_preprocessing=config.model.get("use_preprocessing", True),
-        sample_rate=config.model.get("sample_rate", 250),
+        mlp_ratio=config.model.get("mlp_ratio", 4.0),
+        t_steps=config.model.get("t_steps", 4),
+        tau=config.model.get("tau", 2.0),
+        dropout_rate=config.model.get("dropout_rate", 0.1),
+        use_alignment=config.model.get("use_alignment", True),
+        use_channel_attention=config.model.get("use_channel_attention", True),
+        use_multiscale=config.model.get("use_multiscale", True),
+        use_learned_aggregation=config.model.get("use_learned_aggregation", True),
+        alignment_momentum=config.model.get("alignment_momentum", 0.1),
+        spike_target_rate=config.model.get("spike_target_rate", 0.25),
+        attn_residual_ratio=config.model.get("attn_residual_ratio", 0.1),
+        motor_indices=config.model.get("motor_indices", [6, 7, 8, 9, 10, 11, 12]),
     )
 
     logger.info(
-        "Built S-MSTT with %d parameters (channels=%d, samples=%d, classes=%d)",
+        "Built S-MSTT v3.1 with %d parameters (channels=%d, samples=%d, classes=%d)",
         model.count_parameters(),
         n_channels,
         n_samples,

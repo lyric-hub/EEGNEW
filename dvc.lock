@@ -24,7 +24,7 @@ stages:
     - path: data/raw/dataset_info.txt
       hash: md5
       md5: 6dd51fe23b75be44c764d086fe8ae7ba
-      size: 130
+      size: 1263376
     - path: scripts/preprocess.py
       hash: md5
       md5: 663fc6c84791bff92d594c1fd8bfbd21
@@ -33,7 +33,7 @@ stages:
     outs:
     - path: data/processed/test/data.npy
       hash: md5
-      md5: 2cc5d16d7946e0d4e17bdb683b66cb66
+      md5: fec0914751bd40be747c95343d765dcb
       size: 50738816
     - path: data/processed/test/labels.npy
       hash: md5
@@ -41,7 +41,7 @@ stages:
       size: 4736
     - path: data/processed/train/data.npy
       hash: md5
-      md5: 3e8d9a4ff6366d3fbbbc78897bf58245
+      md5: 837ec6457c3e700e33f847931be76a54
       size: 355170944
     - path: data/processed/train/labels.npy
       hash: md5
