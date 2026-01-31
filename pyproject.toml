@@ -25,6 +25,7 @@ dependencies = [
     "graphene>=3.0; python_version >= '3.12' and python_version < '4'",
     "graphql-relay>=3.0; python_version >= '3.12' and python_version < '4'",
     "dvc-gdrive>=3.0.1",
+    "hydra-optuna-sweeper>=1.1.2",
 ]
 
 [dependency-groups]

@@ -1,0 +1,78 @@
+# Optuna Hyperparameter Sweeper Configuration
+defaults:
+  - override /hydra/sweeper: optuna
+
+hydra:
+  sweeper:
+    _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+    
+    # Optimization settings
+    direction: maximize  # maximize val_accuracy
+    n_trials: 50         # number of trials
+    n_jobs: 1            # parallel jobs (set higher if you have multiple GPUs)
+    
+    # Sampler
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 42
+      n_startup_trials: 10  # random trials before TPE kicks in
+    
+    # Pruner - stops bad trials early
+    pruner:
+      _target_: optuna.pruners.MedianPruner
+      n_startup_trials: 5
+      n_warmup_steps: 10
+      interval_steps: 1
+
+    # Search space
+    params:
+      # Model hyperparameters
+      model.embed_dim:
+        type: categorical
+        choices: [32, 64, 128]
+      
+      model.depth:
+        type: int
+        low: 2
+        high: 6
+      
+      model.num_heads:
+        type: categorical
+        choices: [2, 4, 8]
+      
+      model.t_steps:
+        type: categorical
+        choices: [2, 4, 8]
+      
+      model.tau:
+        type: float
+        low: 1.0
+        high: 4.0
+      
+      model.dropout_rate:
+        type: float
+        low: 0.05
+        high: 0.3
+      
+      model.attn_residual_ratio:
+        type: float
+        low: 0.0
+        high: 0.2
+      
+      # Training hyperparameters
+      training.optimizer.lr:
+        type: float
+        low: 0.0001
+        high: 0.01
+        log: true  # log scale
+      
+      training.optimizer.weight_decay:
+        type: float
+        low: 0.001
+        high: 0.1
+        log: true
+      
+      training.spike_loss_weight:
+        type: float
+        low: 0.01
+        high: 0.5

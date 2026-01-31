@@ -170,7 +170,8 @@ class Trainer:
             # Add spike rate regularization if available
             if hasattr(self.model, 'get_spike_loss'):
                 spike_loss = self.model.get_spike_loss()
-                loss = ce_loss + spike_loss
+                spike_weight = self.config.training.get("spike_loss_weight", 0.1)
+                loss = ce_loss + spike_weight * spike_loss
             else:
                 loss = ce_loss
 
@@ -285,17 +286,18 @@ class Trainer:
             )
 
             if use_mlflow:
-                mlflow.log_metrics(
-                    {
-                        "train_loss": train_loss,
-                        "train_accuracy": train_acc,
-                        "val_loss": val_loss,
-                        "val_accuracy": val_acc,
-                        "val_kappa": val_kappa,
-                        "learning_rate": self.scheduler.get_last_lr()[0],
-                    },
-                    step=epoch,
-                )
+                metrics_to_log = {
+                    "train_loss": train_loss,
+                    "train_accuracy": train_acc,
+                    "val_loss": val_loss,
+                    "val_accuracy": val_acc,
+                    "val_kappa": val_kappa,
+                    "learning_rate": self.scheduler.get_last_lr()[0],
+                }
+                # Log spike rate if available
+                if hasattr(self.model, 'get_spike_rate'):
+                    metrics_to_log["spike_rate"] = self.model.get_spike_rate()
+                mlflow.log_metrics(metrics_to_log, step=epoch)
 
             # Save best model
             if val_acc > self.best_val_accuracy:

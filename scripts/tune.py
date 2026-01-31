@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Hyperparameter tuning with Optuna.
+"""Hyperparameter tuning with Optuna for S-MSTT v3.1.
 
 This script uses Optuna to search for optimal hyperparameters
 for the EEG classification model.
@@ -16,11 +16,14 @@ Output:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
+import mlflow
 import optuna
+from optuna.integration.mlflow import MLflowCallback
 import torch
 import yaml
 from omegaconf import OmegaConf
@@ -30,7 +33,7 @@ from torch.utils.data import DataLoader
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.dataset import EEGDataset
+from src.data.moabb_loader import get_data_info, load_moabb_data
 from src.models.custom import CustomModel
 from src.training.trainer import Trainer
 from src.utils.helpers import get_device, seed_everything, setup_logging
@@ -38,7 +41,12 @@ from src.utils.helpers import get_device, seed_everything, setup_logging
 logger = logging.getLogger(__name__)
 
 
-def create_model(trial: optuna.Trial, n_channels: int, n_samples: int, n_classes: int) -> CustomModel:
+def create_model(
+    trial: optuna.Trial,
+    n_channels: int,
+    n_samples: int,
+    n_classes: int,
+) -> CustomModel:
     """Create model with hyperparameters suggested by Optuna.
 
     Args:
@@ -50,19 +58,27 @@ def create_model(trial: optuna.Trial, n_channels: int, n_samples: int, n_classes
     Returns:
         Model with suggested hyperparameters.
     """
-    # ============================================
-    # Define your hyperparameter search space here
-    # ============================================
-
-    hidden_dim = trial.suggest_categorical("hidden_dim", [64, 128, 256])
-    dropout_rate = trial.suggest_float("dropout_rate", 0.3, 0.7)
+    # S-MSTT v3.1 hyperparameter search space
+    embed_dim = trial.suggest_categorical("embed_dim", [32, 64])
+    depth = trial.suggest_int("depth", 2, 4)
+    num_heads = trial.suggest_categorical("num_heads", [2, 4])
+    t_steps = trial.suggest_categorical("t_steps", [2, 4])
+    tau = trial.suggest_float("tau", 1.0, 3.0)
+    dropout_rate = trial.suggest_float("dropout_rate", 0.05, 0.3)
+    attn_residual_ratio = trial.suggest_float("attn_residual_ratio", 0.0, 0.2)
 
     model = CustomModel(
         n_channels=n_channels,
         n_samples=n_samples,
         n_classes=n_classes,
-        hidden_dim=hidden_dim,
+        embed_dim=embed_dim,
+        depth=depth,
+        num_heads=num_heads,
+        t_steps=t_steps,
+        tau=tau,
         dropout_rate=dropout_rate,
+        attn_residual_ratio=attn_residual_ratio,
+        motor_indices=[6, 7, 8, 9, 10, 11, 12],
     )
 
     return model
@@ -80,44 +96,24 @@ def objective(trial: optuna.Trial, config: dict, device: torch.device) -> float:
         Validation accuracy (to maximize).
     """
     # Suggest training hyperparameters
-    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [16, 32, 64])
+    lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
+    weight_decay = trial.suggest_float("weight_decay", 1e-3, 1e-1, log=True)
+    spike_loss_weight = trial.suggest_float("spike_loss_weight", 0.01, 0.3)
 
-    # Load data
-    data_dir = PROJECT_ROOT / "data" / "processed"
-    train_dataset = EEGDataset.from_file(data_dir / "train")
-    val_dataset = EEGDataset.from_file(data_dir / "val")
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-    )
+    # Load data using MOABB
+    config_obj = OmegaConf.create(config)
+    train_loader, val_loader, _ = load_moabb_data(config_obj)
+    n_channels, n_samples, n_classes = get_data_info(train_loader)
 
     # Create model
-    model = create_model(
-        trial,
-        n_channels=train_dataset.n_channels,
-        n_samples=train_dataset.n_samples,
-        n_classes=train_dataset.n_classes,
-    )
+    model = create_model(trial, n_channels, n_samples, n_classes)
 
     logger.info(
-        "Trial %d: lr=%.6f, weight_decay=%.6f, batch_size=%d, params=%d",
+        "Trial %d: embed_dim=%d, depth=%d, lr=%.6f, params=%d",
         trial.number,
+        trial.params["embed_dim"],
+        trial.params["depth"],
         lr,
-        weight_decay,
-        batch_size,
         model.count_parameters(),
     )
 
@@ -125,8 +121,9 @@ def objective(trial: optuna.Trial, config: dict, device: torch.device) -> float:
     config_copy = OmegaConf.create(config)
     config_copy.training.optimizer.lr = lr
     config_copy.training.optimizer.weight_decay = weight_decay
-    config_copy.training.epochs = 30  # Fewer epochs for tuning
-    config_copy.training.early_stopping.patience = 10
+    config_copy.training.spike_loss_weight = spike_loss_weight
+    config_copy.training.epochs = 20  # Fewer epochs for tuning
+    config_copy.training.early_stopping.patience = 8
     config_copy.training.logging.use_mlflow = False
 
     # Train
@@ -140,7 +137,11 @@ def objective(trial: optuna.Trial, config: dict, device: torch.device) -> float:
 
     try:
         trainer.fit(train_loader, val_loader)
-    except Exception as e:
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            logger.warning("Trial %d: OOM, pruning", trial.number)
+            torch.cuda.empty_cache()
+            raise optuna.TrialPruned()
         logger.error("Trial %d failed: %s", trial.number, e)
         raise optuna.TrialPruned()
 
@@ -156,7 +157,7 @@ def objective(trial: optuna.Trial, config: dict, device: torch.device) -> float:
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Hyperparameter tuning with Optuna")
-    parser.add_argument("--n-trials", type=int, default=50, help="Number of trials")
+    parser.add_argument("--n-trials", type=int, default=30, help="Number of trials")
     parser.add_argument("--timeout", type=int, default=None, help="Timeout in seconds")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
@@ -168,7 +169,9 @@ def main() -> None:
     config_path = PROJECT_ROOT / "config"
     config = OmegaConf.merge(
         OmegaConf.load(config_path / "config.yaml"),
-        OmegaConf.load(config_path / "training" / "default.yaml"),
+        {"data": OmegaConf.load(config_path / "data" / "default.yaml")},
+        {"model": OmegaConf.load(config_path / "model" / "custom.yaml")},
+        {"training": OmegaConf.load(config_path / "training" / "default.yaml")},
     )
 
     device = get_device("auto")
@@ -179,19 +182,32 @@ def main() -> None:
 
     # Create Optuna study
     study = optuna.create_study(
-        study_name="eeg-mi-tuning",
+        study_name="eeg-smstt-tuning",
         direction="maximize",
         storage=f"sqlite:///{output_dir}/study.db",
         load_if_exists=True,
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=10),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=5),
     )
 
-    # Run optimization
+    # MLflow callback for tracking each trial
+    mlflow.set_experiment("optuna-tuning")
+    mlflow_callback = MLflowCallback(
+        tracking_uri="mlruns",
+        metric_name="val_accuracy",
+        create_experiment=False,
+    )
+
+    logger.info("=" * 60)
+    logger.info("S-MSTT v3.1 Hyperparameter Tuning")
+    logger.info("=" * 60)
+
+    # Run optimization with MLflow tracking
     study.optimize(
         lambda trial: objective(trial, OmegaConf.to_container(config), device),
         n_trials=args.n_trials,
         timeout=args.timeout,
         show_progress_bar=True,
+        callbacks=[mlflow_callback],
     )
 
     # Print results
@@ -202,18 +218,31 @@ def main() -> None:
     for key, value in study.best_trial.params.items():
         logger.info("    %s: %s", key, value)
 
-    # Save best parameters
+    # Save best parameters as YAML
     best_params_file = output_dir / "best_params.yaml"
     with open(best_params_file, "w") as f:
         yaml.dump(study.best_trial.params, f, default_flow_style=False)
     logger.info("Best parameters saved to %s", best_params_file)
 
+    # Save best parameters as JSON (for DVC metrics)
+    best_json = output_dir / "best_params.json"
+    with open(best_json, "w") as f:
+        json.dump({
+            "best_val_accuracy": study.best_trial.value,
+            "params": study.best_trial.params,
+        }, f, indent=2)
+
+    # Save trials to CSV
+    study.trials_dataframe().to_csv(output_dir / "trials.csv", index=False)
+
     # Print optimization history
     logger.info("=" * 60)
     logger.info("Optimization summary:")
     logger.info("  Total trials: %d", len(study.trials))
-    logger.info("  Completed: %d", len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]))
-    logger.info("  Pruned: %d", len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]))
+    completed = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    pruned = len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])
+    logger.info("  Completed: %d", completed)
+    logger.info("  Pruned: %d", pruned)
 
 
 if __name__ == "__main__":

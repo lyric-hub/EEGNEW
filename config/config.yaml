@@ -2,6 +2,7 @@ defaults:
   - data: default
   - model: custom
   - training: default
+  - override hydra/sweeper: optuna
   - _self_
 
 experiment_name: eeg-mi-classification

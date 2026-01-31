@@ -16,6 +16,7 @@ scheduler:
 # Training parameters
 epochs: 100
 gradient_clip: 1.0
+spike_loss_weight: 0.1  # Weight for spike rate regularization (tune this)
 
 # Early stopping
 early_stopping:

@@ -127,16 +127,17 @@ wheels = [
 
 [[package]]
 name = "alembic"
-version = "1.18.2"
+version = "1.6.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mako" },
+    { name = "python-dateutil" },
+    { name = "python-editor" },
     { name = "sqlalchemy" },
-    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a7/93/07f5ba5d8e4f4049e864faa9d822bbbbfb6f3223a4ffb1376768ab9ee4b8/alembic-1.18.2.tar.gz", hash = "sha256:1c3ddb635f26efbc80b1b90c5652548202022d4e760f6a78d6d85959280e3684", size = 2048272, upload-time = "2026-01-28T21:23:30.914Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/cc/5e450e60509b9a68fd761f2fa9ccb6fb9e63d7f9c2b60703bec2e5fd1840/alembic-1.6.5.tar.gz", hash = "sha256:a21fedebb3fb8f6bbbba51a11114f08c78709377051384c9c5ead5705ee93a51", size = 1174376, upload-time = "2021-05-27T19:50:34.121Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/60/ced4277ccf61f91eb03c4ac9f63b9567eb814f9ab1cd7835f00fbd5d0c14/alembic-1.18.2-py3-none-any.whl", hash = "sha256:18a5f6448af4864cc308aadf33eb37c0116da9a60fd9bb3f31ccb1b522b4a9b9", size = 261953, upload-time = "2026-01-28T21:23:32.508Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/80/ef186e599a57d0e4cb78fc76e0bfc2e6953fa9716b2a5cf2de0117ed8eb5/alembic-1.6.5-py2.py3-none-any.whl", hash = "sha256:e78be5b919f5bb184e3e0e2dd1ca986f2362e29a2bc933c446fe89f39dbe4e9c", size = 164663, upload-time = "2021-05-27T19:50:32.647Z" },
 ]
 
 [[package]]
@@ -996,6 +997,7 @@ dependencies = [
     { name = "graphql-core", marker = "python_full_version < '4'" },
     { name = "graphql-relay", marker = "python_full_version < '4'" },
     { name = "hydra-core" },
+    { name = "hydra-optuna-sweeper" },
     { name = "mlflow" },
     { name = "mne" },
     { name = "moabb" },
@@ -1021,6 +1023,7 @@ requires-dist = [
     { name = "graphql-core", marker = "python_full_version >= '3.12' and python_full_version < '4'", specifier = ">=3.1,<3.3" },
     { name = "graphql-relay", marker = "python_full_version >= '3.12' and python_full_version < '4'", specifier = ">=3.0" },
     { name = "hydra-core", specifier = ">=1.3.2,<2.0.0" },
+    { name = "hydra-optuna-sweeper", specifier = ">=1.1.2" },
     { name = "mlflow", specifier = ">=3.8.1,<4.0.0" },
     { name = "mne", specifier = ">=1.11.0,<2.0.0" },
     { name = "moabb", specifier = ">=1.4.3,<2.0.0" },
@@ -1581,6 +1584,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6d/8e/07e42bc434a847154083b315779b0a81d567154504624e181caf2c71cd98/hydra-core-1.3.2.tar.gz", hash = "sha256:8a878ed67216997c3e9d88a8e72e7b4767e81af37afb4ea3334b269a4390a824", size = 3263494, upload-time = "2023-02-23T18:33:43.03Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c6/50/e0edd38dcd63fb26a8547f13d28f7a008bc4a3fd4eb4ff030673f22ad41a/hydra_core-1.3.2-py3-none-any.whl", hash = "sha256:fa0238a9e31df3373b35b0bfb672c34cc92718d21f81311d8996a16de1141d8b", size = 154547, upload-time = "2023-02-23T18:33:40.801Z" },
+]
+
+[[package]]
+name = "hydra-optuna-sweeper"
+version = "1.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "alembic" },
+    { name = "hydra-core" },
+    { name = "optuna" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1c/82/8e379880540005f108d2147d92a2cb18951c56c0cc4b1c6fd4a8d56671dd/hydra-optuna-sweeper-1.1.2.tar.gz", hash = "sha256:78e5fcbcef8c2c61ce880f21623a17f01b9049d2ff1f51b6d84d85f1f824a789", size = 6432, upload-time = "2022-01-23T13:34:30.159Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/cd/1cb313f616337ff69bd0500b9106651aff2904d8f69f987331e3070a3be7/hydra_optuna_sweeper-1.1.2-py3-none-any.whl", hash = "sha256:59e811c1299fa53859a6bbe78b1fbcbe6048c88e8c9b092b82f50ac10bc7612f", size = 6940, upload-time = "2022-01-23T13:34:28.082Z" },
 ]
 
 [[package]]
@@ -3335,6 +3352,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f0/26/19cadc79a718c5edbec86fd4919a6b6d3f681039a2f6d66d14be94e75fb9/python_dotenv-1.2.1.tar.gz", hash = "sha256:42667e897e16ab0d66954af0e60a9caa94f0fd4ecf3aaf6d2d260eec1aa36ad6", size = 44221, upload-time = "2025-10-26T15:12:10.434Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/1b/a298b06749107c305e1fe0f814c6c74aea7b2f1e10989cb30f544a1b3253/python_dotenv-1.2.1-py3-none-any.whl", hash = "sha256:b81ee9561e9ca4004139c6cbba3a238c32b03e4894671e181b671e8cb8425d61", size = 21230, upload-time = "2025-10-26T15:12:09.109Z" },
+]
+
+[[package]]
+name = "python-editor"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/85/78f4a216d28343a67b7397c99825cff336330893f00601443f7c7b2f2234/python-editor-1.0.4.tar.gz", hash = "sha256:51fda6bcc5ddbbb7063b2af7509e43bd84bfc32a4ff71349ec7847713882327b", size = 7132, upload-time = "2019-02-01T07:33:13.653Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/d3/201fc3abe391bbae6606e6f1d598c15d367033332bd54352b12f35513717/python_editor-1.0.4-py3-none-any.whl", hash = "sha256:1bf6e860a8ad52a14c3ee1252d5dc25b2030618ed80c022598f00176adc8367d", size = 4877, upload-time = "2019-02-01T07:33:12.47Z" },
 ]
 
 [[package]]

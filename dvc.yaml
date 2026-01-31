@@ -51,3 +51,23 @@ stages:
       - outputs/history.csv:
           x: epoch
           y: val_accuracy
+
+  tune:
+    cmd: python scripts/tune.py --n-trials 30
+    deps:
+      - scripts/tune.py
+      - src/models/custom.py
+      - src/training/trainer.py
+      - config/config.yaml
+      - config/model/custom.yaml
+      - config/training/default.yaml
+    outs:
+      - outputs/tuning/study.db:
+          cache: false
+    metrics:
+      - outputs/tuning/best_params.json:
+          cache: false
+    plots:
+      - outputs/tuning/trials.csv:
+          x: number
+          y: value
