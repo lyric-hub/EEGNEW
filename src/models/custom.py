@@ -1,8 +1,11 @@
 """
-S-MSTT v3.1: Spiking Multilevel Spatio-Temporal Transformer
+S-MSTT v3.2: Spiking Multilevel Spatio-Temporal Transformer
 Subject-Independent EEG Classification
 
-Final production-ready version.
+Critical fixes for improved cross-subject generalization:
+- GroupNorm instead of BatchNorm (eliminates subject-specific statistics)
+- Softmax-normalized attention (proper attention distribution)
+- Increased SNN timesteps (better temporal integration)
 
 Features:
 - SVD-based Euclidean Alignment for subject independence
@@ -172,7 +175,7 @@ class MultiScaleTemporalEncoder(nn.Module):
         self.branches = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, (1, k), padding=(0, k // 2), bias=False),
-                nn.BatchNorm2d(out_channels),
+                nn.GroupNorm(8, out_channels),  # GroupNorm for subject independence
                 neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan()),
             )
             for k in [kernel_gamma, kernel_beta, kernel_mu]
@@ -251,13 +254,16 @@ class SpikingSelfAttention(nn.Module):
 
         attn_score = (q @ k.transpose(-2, -1)) * self.scale
 
+        # Normalize attention with softmax over key dimension (proper distribution)
+        attn_weights = F.softmax(attn_score, dim=-1)
+
         if self.attn_residual_ratio > 0:
-            attn_soft = torch.sigmoid(attn_score)
-            attn_spike = self.attn_lif(attn_score)
+            # Gradient-preserving: mix softmax weights with LIF spikes
+            attn_spike = self.attn_lif(attn_weights)
             r = self.attn_residual_ratio
-            attn_out = (1 - r) * attn_spike + r * attn_soft
+            attn_out = (1 - r) * attn_spike + r * attn_weights
         else:
-            attn_out = self.attn_lif(attn_score)
+            attn_out = self.attn_lif(attn_weights)
 
         if tracker:
             tracker.record(attn_out, "ssa_attn")
@@ -365,22 +371,22 @@ class SpatioTemporalTokenizer(nn.Module):
     ) -> None:
         super().__init__()
         self.spatial_conv = nn.Conv2d(1, embed_dim, (in_channels, 1), bias=False)
-        self.bn1 = nn.BatchNorm2d(embed_dim)
+        self.gn1 = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
         self.lif1 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
 
         self.temporal_conv = nn.Conv2d(embed_dim, embed_dim, (1, 25), stride=(1, 5), padding=(0, 12), bias=False)
-        self.bn2 = nn.BatchNorm2d(embed_dim)
+        self.gn2 = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
         self.lif2 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
 
         self.pool = nn.AvgPool2d((1, 4))
         self.seq_len = time_points // (5 * 4)
 
     def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
-        x = self.lif1(self.bn1(self.spatial_conv(x)))
+        x = self.lif1(self.gn1(self.spatial_conv(x)))
         if tracker:
             tracker.record(x, "tok_spatial")
 
-        x = self.lif2(self.bn2(self.temporal_conv(x)))
+        x = self.lif2(self.gn2(self.temporal_conv(x)))
         if tracker:
             tracker.record(x, "tok_temporal")
 
@@ -448,7 +454,7 @@ class CustomModel(BaseModel):
         depth: int = 4,
         num_heads: int = 4,
         mlp_ratio: float = 4.0,
-        t_steps: int = 4,
+        t_steps: int = 16,  # Increased for better temporal integration
         tau: float = 2.0,
         dropout_rate: float = 0.1,
         use_alignment: bool = True,
@@ -493,7 +499,7 @@ class CustomModel(BaseModel):
         if use_multiscale:
             self.encoder = MultiScaleTemporalEncoder(1, embed_dim, tau=tau)
             self.spatial_collapse = nn.Conv2d(embed_dim, embed_dim, (n_channels, 1), bias=False)
-            self.spatial_bn = nn.BatchNorm2d(embed_dim)
+            self.spatial_gn = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
             self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
             self.temporal_pool = nn.AvgPool2d((1, 4))
             self.seq_len = n_samples // 4
@@ -524,7 +530,7 @@ class CustomModel(BaseModel):
         # 8. Tracker
         self.spike_tracker = SpikeRateTracker(spike_target_rate, 1.0)
 
-        logger.info(f"S-MSTT v3.1 | seq_len={self.seq_len} | params={self.count_parameters():,}")
+        logger.info(f"S-MSTT v3.2 | seq_len={self.seq_len} | params={self.count_parameters():,}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Input validation
@@ -550,7 +556,7 @@ class CustomModel(BaseModel):
         # 3. Tokenization
         if self.use_multiscale:
             x = self.encoder(x, self.spike_tracker)
-            x = self.spatial_lif(self.spatial_bn(self.spatial_collapse(x)))
+            x = self.spatial_lif(self.spatial_gn(self.spatial_collapse(x)))
             self.spike_tracker.record(x, "spatial_collapse")
             x = self.temporal_pool(x)
             tokens = x.squeeze(2).permute(0, 2, 1)

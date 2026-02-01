@@ -11,7 +11,7 @@ n_classes: 4
 # ============================================
 # SNN Simulation
 # ============================================
-t_steps: 8                # Simulation timesteps
+t_steps: 16               # Increased for better temporal integration
 
 # ============================================
 # Architecture (INCREASED CAPACITY)
