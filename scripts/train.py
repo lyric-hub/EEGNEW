@@ -149,6 +149,16 @@ def main(config: DictConfig) -> float:
             output_dir=output_dir,
         )
 
+        # Resume from checkpoint if specified
+        resume_from = config.training.get("resume_from", None)
+        if resume_from:
+            checkpoint_path = Path(resume_from)
+            if checkpoint_path.exists():
+                logger.info("Resuming from checkpoint: %s", checkpoint_path)
+                trainer.load_checkpoint(checkpoint_path)
+            else:
+                logger.warning("Checkpoint not found: %s, starting fresh", checkpoint_path)
+
         # Train
         logger.info("Starting training...")
         history = trainer.fit(train_loader, val_loader)
