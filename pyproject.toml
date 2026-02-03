@@ -26,6 +26,8 @@ dependencies = [
     "graphql-relay>=3.0; python_version >= '3.12' and python_version < '4'",
     "dvc-gdrive>=3.0.1",
     "hydra-optuna-sweeper>=1.1.2",
+    "alembic>=1.6.5",
+    "sqlalchemy>=2.0.46",
 ]
 
 [dependency-groups]
