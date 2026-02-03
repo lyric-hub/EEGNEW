@@ -16,6 +16,9 @@ epochs: 100
 gradient_clip: 1.0
 spike_loss_weight: 0.1
 
+# Resume from checkpoint (set to path like "models/best_model.pt" to resume)
+resume_from: null
+
 # Early stopping
 early_stopping:
   enabled: true
