@@ -1,0 +1,26 @@
+# Memory-optimized data config for Google Colab (T4 GPU ~15GB)
+# Usage: python scripts/train.py data=colab
+
+dataset_name: BNCI2014_001
+
+# Subject splits for subject-independent training
+train_subjects: [1, 2, 3, 4, 5, 6, 7]
+val_subjects: [8]
+test_subjects: [9]
+val_ratio: 0.0  # Use dedicated val_subjects instead
+
+# Paradigm settings
+paradigm:
+  n_classes: 4
+  fmin: 8.0
+  fmax: 35.0
+  tmin: -0.5
+  tmax: 4.0
+  resample: 250
+  channels: null
+
+# MEMORY-OPTIMIZED: Reduced batch size
+batch_size: 16      # Reduced from 32
+num_workers: 0      # Colab doesn't support multiprocessing well
+pin_memory: true
+seed: 42

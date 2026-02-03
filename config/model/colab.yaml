@@ -1,0 +1,42 @@
+# Memory-optimized model config for Google Colab (T4 GPU ~15GB)
+# Usage: python scripts/train.py model=colab
+
+name: CustomModel
+
+# Data dimensions (will be overridden by actual data)
+n_channels: 22
+n_samples: 1126
+n_classes: 4
+
+# MEMORY-OPTIMIZED parameters for T4 GPU
+t_steps: 4          # Reduced from 16 (biggest memory saver)
+embed_dim: 32       # Reduced from 64
+depth: 3            # Reduced from 4
+num_heads: 4
+mlp_ratio: 4.0
+
+# SNN parameters
+tau: 4.0
+v_threshold: 1.0
+
+# Regularization
+dropout_rate: 0.2
+spike_target_rate: 0.25
+attn_residual_ratio: 0.1
+
+# Feature toggles
+use_alignment: true
+use_channel_attention: true
+use_multiscale: true
+use_learned_aggregation: true
+alignment_momentum: 0.1
+
+# Motor cortex channel indices (C3, Cz, C4 area)
+motor_indices: [6, 7, 8, 9, 10, 11, 12]
+
+# Legacy (unused)
+f1: 32
+depth_multiplier: 2
+sample_rate: 250
+use_preprocessing: false
+attention_pool: 8

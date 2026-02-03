@@ -1,6 +1,5 @@
 # Optuna Hyperparameter Sweeper Configuration
-defaults:
-  - override /hydra/sweeper: optuna
+# @package _global_
 
 hydra:
   sweeper:
