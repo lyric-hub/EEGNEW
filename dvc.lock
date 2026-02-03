@@ -55,3 +55,61 @@ stages:
       hash: md5
       md5: 5833ab88d8f240bdae87c5ce0170dcdf
       size: 128
+  train:
+    cmd: python scripts/train.py training.logging.use_mlflow=true
+    deps:
+    - path: config/config.yaml
+      hash: md5
+      md5: fbcefc6b1da6274eeebac3c350e02939
+      size: 449
+      isexec: true
+    - path: config/model/custom.yaml
+      hash: md5
+      md5: be579190b41eb2dcd1f495be9ebeefb6
+      size: 1504
+      isexec: true
+    - path: config/training/default.yaml
+      hash: md5
+      md5: 8c8cd1f4a4a930df11192845ccb9d024
+      size: 596
+      isexec: true
+    - path: data/processed/train/data.npy
+      hash: md5
+      md5: 837ec6457c3e700e33f847931be76a54
+      size: 355170944
+    - path: data/processed/val/data.npy
+      hash: md5
+      md5: 5833ab88d8f240bdae87c5ce0170dcdf
+      size: 128
+    - path: scripts/train.py
+      hash: md5
+      md5: fc18d8944e17ad85f484a9153aeecaaf
+      size: 6663
+      isexec: true
+    - path: src/models/custom.py
+      hash: md5
+      md5: 90833215931498652bc4ec4f4c4eae92
+      size: 21404
+      isexec: true
+    - path: src/training/trainer.py
+      hash: md5
+      md5: 81e7ed6406edb84638302d92b94db597
+      size: 11570
+      isexec: true
+    outs:
+    - path: models/best_model.pt
+      hash: md5
+      md5: d276dce3d2c4ad4185801ceb5c6e6d13
+      size: 961435
+    - path: models/last_model.pt
+      hash: md5
+      md5: eded33a9827bc9e2eb3c8388523cbbff
+      size: 961435
+    - path: outputs/history.csv
+      hash: md5
+      md5: 6c1e87a5aec117065a9e3d417d812204
+      size: 3162
+    - path: outputs/metrics.json
+      hash: md5
+      md5: 4dd4e354fa8da2dce2f260a2010c7b6a
+      size: 162
