@@ -9,39 +9,44 @@ This workflow also pushes DVC-tracked data before the Git push.
 
 ## Steps
 
-1. Check git status to see what files have changed:
+1. Activate the environment:
+   ```bash
+   source .venv/bin/activate
+   ```
+
+2. Check git status to see what files have changed:
    ```bash
    git status --short
    ```
 
-2. View the diff to understand the changes:
+3. View the diff to understand the changes:
    ```bash
    git diff --stat
    ```
 
-3. Stage all changes:
+4. Stage all changes:
    ```bash
    git add .
    ```
 
-4. Based on the changes, generate a relevant commit message following this format:
+5. Based on the changes, generate a relevant commit message following this format:
    - First line: Brief summary (50 chars max), type prefix like `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`
    - Empty line
    - Optional body with bullet points explaining what changed
 
-5. Commit with the generated message:
+6. Commit with the generated message:
    ```bash
    git commit -m "<generated message>"
    ```
 
 // turbo
-6. Push DVC-tracked data to remote storage:
+7. Push DVC-tracked data to remote storage:
    ```bash
    dvc push
    ```
 
 // turbo
-7. Push to Git remote:
+8. Push to Git remote:
    ```bash
    git push
    ```
