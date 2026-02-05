@@ -65,13 +65,13 @@ stages:
       isexec: true
     - path: config/model/custom.yaml
       hash: md5
-      md5: be579190b41eb2dcd1f495be9ebeefb6
-      size: 1504
+      md5: 1220c0cf9ceaa11f14c43a3793c91ba7
+      size: 1524
       isexec: true
     - path: config/training/default.yaml
       hash: md5
-      md5: 8c8cd1f4a4a930df11192845ccb9d024
-      size: 596
+      md5: 79f6177cce28d895544415fbba571531
+      size: 605
       isexec: true
     - path: data/processed/train/data.npy
       hash: md5
@@ -88,8 +88,8 @@ stages:
       isexec: true
     - path: src/models/custom.py
       hash: md5
-      md5: 90833215931498652bc4ec4f4c4eae92
-      size: 21404
+      md5: 5f958241effcbf5c32175998968ec682
+      size: 22145
       isexec: true
     - path: src/training/trainer.py
       hash: md5
