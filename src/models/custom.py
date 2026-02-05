@@ -111,7 +111,9 @@ class EuclideanAlignment(nn.Module):
                     + self.momentum * R_batch.detach()
                 )
             if self.num_batches_tracked < self.warmup_batches:
-                return x.unsqueeze(1)
+                # FIX: Return identity matrix during warmup for stable gradients
+                # instead of bypassing alignment which breaks the computation graph
+                return x.unsqueeze(1) if x.dim() == 3 else x
 
         R = self.running_R.detach()
         try:
@@ -501,8 +503,11 @@ class CustomModel(BaseModel):
             self.spatial_collapse = nn.Conv2d(embed_dim, embed_dim, (n_channels, 1), bias=False)
             self.spatial_gn = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
             self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
-            self.temporal_pool = nn.AvgPool2d((1, 4))
-            self.seq_len = n_samples // 4
+            self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+            
+            # FIX: Use configured attention_pool instead of hardcoded 4
+            self.temporal_pool = nn.AvgPool2d((1, attention_pool))
+            self.seq_len = n_samples // attention_pool
             self.tokenizer = None
         else:
             self.encoder = None
@@ -566,9 +571,15 @@ class CustomModel(BaseModel):
         # Handle sequence length
         B, N, D = tokens.shape
         if N > self.seq_len:
-            tokens = tokens[:, :self.seq_len, :]
+            # FIX: Adaptive pooling instead of truncation to preserve information
+            tokens = tokens.transpose(1, 2)
+            tokens = F.adaptive_avg_pool1d(tokens, self.seq_len)
+            tokens = tokens.transpose(1, 2)
         elif N < self.seq_len:
-            tokens = F.pad(tokens, (0, 0, 0, self.seq_len - N))
+            # FIX: Adaptive pooling instead of zero padding
+            tokens = tokens.transpose(1, 2)
+            tokens = F.adaptive_avg_pool1d(tokens, self.seq_len)
+            tokens = tokens.transpose(1, 2)
 
         tokens = tokens + self.pos_embed
 

@@ -14,7 +14,7 @@ scheduler:
 
 epochs: 100
 gradient_clip: 1.0
-spike_loss_weight: 0.1
+spike_loss_weight: 1.0 # Increased for V3.3 (Revive Neurons)
 
 # Resume from checkpoint (set to path like "models/best_model.pt" to resume)
 resume_from: null

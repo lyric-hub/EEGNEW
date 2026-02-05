@@ -16,11 +16,11 @@ num_heads: 4
 mlp_ratio: 4.0
 
 # SNN parameters
-tau: 4.0
+tau: 2.0           # Tuned for responsiveness (V3.3)
 v_threshold: 1.0
 
 # Regularization
-dropout_rate: 0.2
+dropout_rate: 0.3  # Increased for smoothing (V3.3)
 spike_target_rate: 0.25
 attn_residual_ratio: 0.1
 
