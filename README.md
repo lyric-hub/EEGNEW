@@ -33,7 +33,7 @@ eeg-nn/
 │   └── train.py                # Train model
 ├── data/                       # Data directory (DVC tracked)
 ├── models/                     # Saved checkpoints
-├── outputs/                    # Hydra outputs
+├── logs/                       # Hydra and application logs
 ├── dvc.yaml                    # DVC pipeline
 └── pyproject.toml              # Dependencies
 ```
@@ -106,7 +106,7 @@ Commands:
 ```bash
 dvc repro          # Run full pipeline
 dvc dag            # View pipeline graph
-dvc metrics show   # Show metrics
+
 ```
 
 ## 🎯 Hyperparameter Tuning
@@ -129,8 +129,7 @@ python scripts/tune.py --n-trials 100 --timeout 3600
 - Dropout: `0.3` to `0.7`
 
 **Output:**
-- `outputs/tuning/best_params.yaml` - Best hyperparameters
-- `outputs/tuning/study.db` - SQLite database for analysis
+- `tuning.db` - SQLite database for analysis (in project root)
 
 **Apply best params:**
 ```bash
