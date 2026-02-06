@@ -2,7 +2,7 @@ defaults:
   - data: default
   - model: custom
   - training: default
-  - override hydra/sweeper: optuna
+  - override hydra/sweeper: optuna_custom
   - _self_
 
 experiment_name: eeg-mi-classification
@@ -12,10 +12,18 @@ paths:
   data_raw: ${hydra:runtime.cwd}/data/raw
   data_processed: ${hydra:runtime.cwd}/data/processed
   models: ${hydra:runtime.cwd}/models
-  outputs: ${hydra:runtime.cwd}/outputs
+  outputs: ${hydra:runtime.cwd}/logs/hydra  # Redirecting to logs
 
 # Random seed for reproducibility
 seed: 42
 
 # Device configuration
 device: auto  # auto, cpu, cuda, mps
+
+# Hydra Configuration
+hydra:
+  run:
+    dir: logs/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: logs/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
