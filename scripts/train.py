@@ -183,23 +183,7 @@ def main(config: DictConfig) -> float:
             })
             mlflow.log_artifact(str(output_dir / "best_model.pt"))
 
-        # Save metrics to JSON for DVC
-        metrics = {
-            "test_loss": float(test_loss),
-            "test_accuracy": float(test_acc),
-            "test_kappa": float(test_kappa),
-            "best_val_accuracy": float(trainer.best_val_accuracy),
-        }
-        metrics_path = Path("outputs/metrics.json")
-        metrics_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(metrics_path, "w") as f:
-            json.dump(metrics, f, indent=4)
 
-        # Save history to CSV for DVC plots
-        history_df = pd.DataFrame(history)
-        history_df.index.name = "epoch"
-        history_df.to_csv("outputs/history.csv")
-        logger.info("Saved metrics to %s and history to outputs/history.csv", metrics_path)
 
     finally:
         if config.training.logging.use_mlflow:

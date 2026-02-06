@@ -8,9 +8,7 @@ Usage:
     python scripts/tune.py --n-trials 50
     python scripts/tune.py --n-trials 100 --timeout 3600
 
-Output:
-    outputs/tuning/best_params.yaml
-    outputs/tuning/study.db (SQLite database)
+
 """
 
 from __future__ import annotations
@@ -176,15 +174,13 @@ def main() -> None:
 
     device = get_device("auto")
 
-    # Create output directory
-    output_dir = PROJECT_ROOT / "outputs" / "tuning"
-    output_dir.mkdir(parents=True, exist_ok=True)
+
 
     # Create Optuna study
     study = optuna.create_study(
         study_name="eeg-smstt-tuning",
         direction="maximize",
-        storage=f"sqlite:///{output_dir}/study.db",
+        storage=f"sqlite:///{PROJECT_ROOT}/tuning.db",
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=5),
     )
@@ -218,22 +214,7 @@ def main() -> None:
     for key, value in study.best_trial.params.items():
         logger.info("    %s: %s", key, value)
 
-    # Save best parameters as YAML
-    best_params_file = output_dir / "best_params.yaml"
-    with open(best_params_file, "w") as f:
-        yaml.dump(study.best_trial.params, f, default_flow_style=False)
-    logger.info("Best parameters saved to %s", best_params_file)
 
-    # Save best parameters as JSON (for DVC metrics)
-    best_json = output_dir / "best_params.json"
-    with open(best_json, "w") as f:
-        json.dump({
-            "best_val_accuracy": study.best_trial.value,
-            "params": study.best_trial.params,
-        }, f, indent=2)
-
-    # Save trials to CSV
-    study.trials_dataframe().to_csv(output_dir / "trials.csv", index=False)
 
     # Print optimization history
     logger.info("=" * 60)
