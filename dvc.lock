@@ -99,12 +99,12 @@ stages:
     outs:
     - path: models/best_model.pt
       hash: md5
-      md5: d276dce3d2c4ad4185801ceb5c6e6d13
-      size: 961435
+      md5: a93c7a469d266ad2382eb76d73ed69ca
+      size: 907291
     - path: models/last_model.pt
       hash: md5
-      md5: eded33a9827bc9e2eb3c8388523cbbff
-      size: 961435
+      md5: 3cb2c294329ebf2f50a0dd311f33ff67
+      size: 907291
     - path: outputs/history.csv
       hash: md5
       md5: 6c1e87a5aec117065a9e3d417d812204
