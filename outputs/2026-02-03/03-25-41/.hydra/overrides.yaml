@@ -1,6 +1,0 @@
-- data=colab
-- model=colab
-- training=colab
-- training.resume_from=models/best_model.pt
-- training.early_stopping.patience=30
-- training.epochs=200
