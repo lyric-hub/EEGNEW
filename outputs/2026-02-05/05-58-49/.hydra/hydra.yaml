@@ -1,0 +1,224 @@
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  sweeper:
+    hydra:
+      sweeper:
+        _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+        direction: maximize
+        n_trials: 50
+        n_jobs: 1
+        sampler:
+          _target_: optuna.samplers.TPESampler
+          seed: 42
+          n_startup_trials: 10
+        pruner:
+          _target_: optuna.pruners.MedianPruner
+          n_startup_trials: 5
+          n_warmup_steps: 10
+          interval_steps: 1
+        params:
+          model.embed_dim:
+            type: categorical
+            choices:
+            - 32
+            - 64
+            - 128
+          model.depth:
+            type: int
+            low: 2
+            high: 6
+          model.num_heads:
+            type: categorical
+            choices:
+            - 2
+            - 4
+            - 8
+          model.t_steps:
+            type: categorical
+            choices:
+            - 2
+            - 4
+            - 8
+          model.tau:
+            type: float
+            low: 1.0
+            high: 4.0
+          model.dropout_rate:
+            type: float
+            low: 0.05
+            high: 0.3
+          model.attn_residual_ratio:
+            type: float
+            low: 0.0
+            high: 0.2
+          training.optimizer.lr:
+            type: float
+            low: 0.0001
+            high: 0.01
+            log: true
+          training.optimizer.weight_decay:
+            type: float
+            low: 0.001
+            high: 0.1
+            log: true
+          training.spike_loss_weight:
+            type: float
+            low: 0.01
+            high: 0.5
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+    hydra_help: ???
+  hydra_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][HYDRA] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    loggers:
+      logging_example:
+        level: DEBUG
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  env: {}
+  mode: RUN
+  searchpath: []
+  callbacks: {}
+  output_subdir: .hydra
+  overrides:
+    hydra:
+    - hydra.mode=RUN
+    task:
+    - data=colab
+    - model=colab
+    - training=colab
+    - training.resume_from=models/best_model.pt
+    - training.early_stopping.patience=30
+    - training.epochs=200
+  job:
+    name: train
+    chdir: null
+    override_dirname: data=colab,model=colab,training.early_stopping.patience=30,training.epochs=200,training.resume_from=models/best_model.pt,training=colab
+    id: ???
+    num: ???
+    config_name: config
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.3.2
+    version_base: '1.3'
+    cwd: /content/EEGNEW
+    config_sources:
+    - path: hydra.conf
+      schema: pkg
+      provider: hydra
+    - path: /content/EEGNEW/config
+      schema: file
+      provider: main
+    - path: ''
+      schema: structured
+      provider: schema
+    output_dir: /content/EEGNEW/outputs/2026-02-05/05-58-49
+    choices:
+      training: colab
+      model: colab
+      data: colab
+      hydra/env: default
+      hydra/callbacks: null
+      hydra/job_logging: default
+      hydra/hydra_logging: default
+      hydra/hydra_help: default
+      hydra/help: default
+      hydra/sweeper: optuna
+      hydra/launcher: basic
+      hydra/output: default
+  verbose: false

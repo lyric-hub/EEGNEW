@@ -1,0 +1,6 @@
+- data=colab
+- model=colab
+- training=colab
+- model.dropout_rate=0.3
+- training.optimizer.weight_decay=0.05
+- training.resume_from=models/best_model.pt
