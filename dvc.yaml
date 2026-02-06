@@ -44,13 +44,7 @@ stages:
     outs:
       - models/best_model.pt
       - models/last_model.pt
-    metrics:
-      - outputs/metrics.json:
-          cache: false
-    plots:
-      - outputs/history.csv:
-          x: epoch
-          y: val_accuracy
+
 
   tune:
     cmd: python scripts/tune.py --n-trials 30
@@ -64,10 +58,4 @@ stages:
     outs:
       - outputs/tuning/study.db:
           cache: false
-    metrics:
-      - outputs/tuning/best_params.json:
-          cache: false
-    plots:
-      - outputs/tuning/trials.csv:
-          x: number
-          y: value
+
