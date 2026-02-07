@@ -17,6 +17,8 @@ from omegaconf import DictConfig
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader, TensorDataset
 
+from src.data.augmentation import AugmentedDataset, EEGAugmentation
+
 if TYPE_CHECKING:
     pass
 
@@ -91,6 +93,19 @@ def load_moabb_data(
         torch.from_numpy(X_test.astype(np.float32)),
         torch.from_numpy(y_test_encoded.astype(np.int64)),
     )
+
+    # Apply augmentation to training data only
+    use_augmentation = getattr(config.data, 'use_augmentation', True)
+    if use_augmentation:
+        augmentation = EEGAugmentation(
+            channel_dropout_prob=getattr(config.data, 'aug_channel_dropout', 0.2),
+            time_shift_max=getattr(config.data, 'aug_time_shift', 50),
+            time_warp_prob=getattr(config.data, 'aug_time_warp', 0.2),
+            gaussian_noise_prob=getattr(config.data, 'aug_noise_prob', 0.3),
+            noise_snr_db=getattr(config.data, 'aug_noise_snr', 20.0),
+        )
+        train_dataset = AugmentedDataset(train_dataset, augmentation, apply_augmentation=True)
+        logger.info("Training data augmentation enabled")
 
     # Create DataLoaders
     train_loader = DataLoader(

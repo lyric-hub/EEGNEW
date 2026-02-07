@@ -4,7 +4,7 @@
 optimizer:
   name: AdamW
   lr: 0.001
-  weight_decay: 0.01
+  weight_decay: 0.05      # Increased for V3.3 regularization
   betas: [0.9, 0.999]
 
 # Learning rate scheduler
@@ -16,7 +16,7 @@ scheduler:
 # Training parameters
 epochs: 100
 gradient_clip: 1.0
-spike_loss_weight: 1.0  # Weight for spike rate regularization (increased for V3.3)
+spike_loss_weight: 2.0  # Weight for spike rate regularization (increased for V3.3)
 
 # Early stopping
 early_stopping:

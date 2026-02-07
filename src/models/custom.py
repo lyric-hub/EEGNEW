@@ -1,17 +1,18 @@
 """
-S-MSTT v3.2: Spiking Multilevel Spatio-Temporal Transformer
+S-MSTT v3.3: Spiking Multilevel Spatio-Temporal Transformer
 Subject-Independent EEG Classification
 
-Critical fixes for improved cross-subject generalization:
-- GroupNorm instead of BatchNorm (eliminates subject-specific statistics)
-- Softmax-normalized attention (proper attention distribution)
-- Increased SNN timesteps (better temporal integration)
+v3.3 Improvements:
+- DropPath (Stochastic Depth) for regularization
+- Beta-biased multi-scale fusion [γ=0.2, β=0.6, μ=0.2]
+- EEG data augmentation (channel/temporal/amplitude)
+- Adaptive GroupNorm
 
-Features:
+Core Features:
 - SVD-based Euclidean Alignment for subject independence
 - Multi-scale temporal encoding (Mu/Beta/Gamma rhythms)
 - Spiking Self-Attention with gradient-preserving residual
-- LayerNorm for correct dimension handling
+- GroupNorm instead of BatchNorm (no subject-specific statistics)
 - Complete spike rate tracking across all LIF neurons
 - Learned temporal aggregation over SNN timesteps
 """
@@ -55,6 +56,9 @@ class SpikeRateTracker:
         if layer_name not in self.layer_rates:
             self.layer_rates[layer_name] = []
         self.layer_rates[layer_name].append(rate.item())
+        
+        # Assert binary spikes (spikingjelly LIF outputs should be 0 or 1)
+        assert spikes.max() <= 1.0, f"Non-binary spikes in {layer_name}: max={spikes.max()}"
         return spikes
 
     def get_loss(self) -> torch.Tensor:
@@ -111,10 +115,14 @@ class EuclideanAlignment(nn.Module):
                     + self.momentum * R_batch.detach()
                 )
             if self.num_batches_tracked < self.warmup_batches:
-                # FIX: Return identity matrix during warmup for stable gradients
-                # instead of bypassing alignment which breaks the computation graph
-                return x.unsqueeze(1) if x.dim() == 3 else x
+                # Use identity transform during warmup to maintain gradient flow
+                whitening_mat = torch.eye(C, device=x.device, dtype=x.dtype)
+                x_aligned = torch.matmul(whitening_mat, x_centered)
+                return x_aligned.unsqueeze(1)
 
+        # Detach running_R: EA is a preprocessing transform, not learned.
+        # Gradients should flow through the whitening operation but not
+        # update the covariance estimate (which is computed from data statistics).
         R = self.running_R.detach()
         try:
             U, S, Vh = torch.linalg.svd(R)
@@ -155,6 +163,32 @@ class ChannelAttention(nn.Module):
 
 
 # =============================================================================
+# DROP PATH (STOCHASTIC DEPTH)
+# =============================================================================
+
+
+class DropPath(nn.Module):
+    """Stochastic Depth: randomly drops entire blocks during training.
+    
+    Paper: Huang et al., "Deep Networks with Stochastic Depth", ECCV 2016.
+    """
+    
+    def __init__(self, drop_prob: float = 0.1) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.drop_prob == 0.0:
+            return x
+        keep_prob = 1 - self.drop_prob
+        # Work with any tensor shape
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, device=x.device, dtype=x.dtype)
+        random_tensor.floor_()
+        return x.div(keep_prob) * random_tensor
+
+
+# =============================================================================
 # MULTI-SCALE ENCODER
 # =============================================================================
 
@@ -177,12 +211,14 @@ class MultiScaleTemporalEncoder(nn.Module):
         self.branches = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, (1, k), padding=(0, k // 2), bias=False),
-                nn.GroupNorm(8, out_channels),  # GroupNorm for subject independence
+                nn.GroupNorm(min(8, out_channels), out_channels),  # Adaptive GroupNorm
                 neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan()),
             )
             for k in [kernel_gamma, kernel_beta, kernel_mu]
         ])
-        self.fusion_weights = nn.Parameter(torch.ones(3) / 3)
+        # Beta-biased initialization: neuroscience evidence suggests beta rhythm
+        # is most important for motor imagery. Still learnable via softmax.
+        self.fusion_weights = nn.Parameter(torch.tensor([0.2, 0.6, 0.2]))
         self.names = ["gamma", "beta", "mu"]
 
     @staticmethod
@@ -335,7 +371,7 @@ class SpikingMLP(nn.Module):
 
 
 class SBlock(nn.Module):
-    """Transformer block with spike tracking."""
+    """Transformer block with spike tracking and stochastic depth."""
 
     def __init__(
         self,
@@ -345,14 +381,16 @@ class SBlock(nn.Module):
         dropout: float = 0.1,
         tau: float = 2.0,
         attn_residual_ratio: float = 0.1,
+        drop_path: float = 0.0,
     ) -> None:
         super().__init__()
         self.attn = SpikingSelfAttention(dim, num_heads, tau, dropout, attn_residual_ratio)
         self.mlp = SpikingMLP(dim, int(dim * mlp_ratio), dropout, tau)
+        self.drop_path = DropPath(drop_path) if drop_path > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
-        x = x + self.attn(x, tracker)
-        x = x + self.mlp(x, tracker)
+        x = x + self.drop_path(self.attn(x, tracker))
+        x = x + self.drop_path(self.mlp(x, tracker))
         return x
 
 
@@ -423,7 +461,7 @@ class LearnedTemporalAggregation(nn.Module):
 
 class CustomModel(BaseModel):
     """
-    S-MSTT v3.1: Spiking Multilevel Spatio-Temporal Transformer
+    S-MSTT v3.3: Spiking Multilevel Spatio-Temporal Transformer
     Subject-Independent EEG Classification
 
     Args:
@@ -444,6 +482,7 @@ class CustomModel(BaseModel):
         alignment_momentum: EA momentum value
         spike_target_rate: Target spike rate for regularization
         attn_residual_ratio: Soft attention mix ratio for gradient flow
+        drop_path_rate: Stochastic depth drop rate (0.0 = no drop)
         motor_indices: Channel indices for motor cortex attention bias
     """
 
@@ -466,6 +505,7 @@ class CustomModel(BaseModel):
         alignment_momentum: float = 0.1,
         spike_target_rate: float = 0.25,
         attn_residual_ratio: float = 0.1,
+        drop_path_rate: float = 0.1,  # Stochastic depth for regularization
         motor_indices: Optional[list[int]] = None,
         # Legacy compatibility args (unused in v3.1)
         f1: int = 32,
@@ -501,11 +541,10 @@ class CustomModel(BaseModel):
         if use_multiscale:
             self.encoder = MultiScaleTemporalEncoder(1, embed_dim, tau=tau)
             self.spatial_collapse = nn.Conv2d(embed_dim, embed_dim, (n_channels, 1), bias=False)
-            self.spatial_gn = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
-            self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+            self.spatial_gn = nn.GroupNorm(min(8, embed_dim), embed_dim)  # Adaptive GroupNorm
             self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
             
-            # FIX: Use configured attention_pool instead of hardcoded 4
+            # Temporal pooling with configurable factor
             self.temporal_pool = nn.AvgPool2d((1, attention_pool))
             self.seq_len = n_samples // attention_pool
             self.tokenizer = None
@@ -518,10 +557,11 @@ class CustomModel(BaseModel):
         self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, embed_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
-        # 5. Transformer
+        # 5. Transformer (with linearly increasing drop path for deeper blocks)
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.ModuleList([
-            SBlock(embed_dim, num_heads, mlp_ratio, dropout_rate, tau, attn_residual_ratio)
-            for _ in range(depth)
+            SBlock(embed_dim, num_heads, mlp_ratio, dropout_rate, tau, attn_residual_ratio, dpr[i])
+            for i in range(depth)
         ])
 
         # 6. Aggregation
@@ -570,16 +610,8 @@ class CustomModel(BaseModel):
 
         # Handle sequence length
         B, N, D = tokens.shape
-        if N > self.seq_len:
-            # FIX: Adaptive pooling instead of truncation to preserve information
-            tokens = tokens.transpose(1, 2)
-            tokens = F.adaptive_avg_pool1d(tokens, self.seq_len)
-            tokens = tokens.transpose(1, 2)
-        elif N < self.seq_len:
-            # FIX: Adaptive pooling instead of zero padding
-            tokens = tokens.transpose(1, 2)
-            tokens = F.adaptive_avg_pool1d(tokens, self.seq_len)
-            tokens = tokens.transpose(1, 2)
+        if N != self.seq_len:
+            tokens = F.adaptive_avg_pool1d(tokens.transpose(1, 2), self.seq_len).transpose(1, 2)
 
         tokens = tokens + self.pos_embed
 

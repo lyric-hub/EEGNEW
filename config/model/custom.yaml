@@ -29,7 +29,7 @@ use_preprocessing: false  # Disabled - MOABB already epochs correctly
 # ============================================
 # Regularization (INCREASED)
 # ============================================
-dropout_rate: 0.3         # Dropout probability (increased for V3.3)
+dropout_rate: 0.5         # Dropout probability (increased for V3.3)
 
 # ============================================
 # Memory Optimization
@@ -40,4 +40,5 @@ attention_pool: 8         # Pool factor for attention
 # LIF Neuron Parameters (TUNED)
 # ============================================
 tau: 2.0                  # Membrane time constant (reduced for V3.3)
-v_threshold: 1.0          # Firing threshold
+v_threshold: 0.8          # Firing threshold (lowered for V3.3)
+spike_target_rate: 0.10   # Target spike rate (realistic for SNNs)
