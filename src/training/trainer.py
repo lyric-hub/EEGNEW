@@ -273,9 +273,10 @@ class Trainer:
             self.scheduler.step()
 
             # Log metrics
+            spike_rate = self.model.get_spike_rate() if hasattr(self.model, 'get_spike_rate') else 0.0
             logger.info(
                 "Epoch %d/%d - Train Loss: %.4f, Train Acc: %.4f, "
-                "Val Loss: %.4f, Val Acc: %.4f, Val Kappa: %.4f",
+                "Val Loss: %.4f, Val Acc: %.4f, Val Kappa: %.4f, Spike: %.2f%%",
                 epoch + 1,
                 self.config.training.epochs,
                 train_loss,
@@ -283,6 +284,7 @@ class Trainer:
                 val_loss,
                 val_acc,
                 val_kappa,
+                spike_rate * 100,
             )
 
             if use_mlflow:
