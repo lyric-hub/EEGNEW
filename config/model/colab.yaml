@@ -17,12 +17,13 @@ mlp_ratio: 4.0
 
 # SNN parameters
 tau: 2.0           # Tuned for responsiveness (V3.3)
-v_threshold: 1.0
+v_threshold: 0.8   # Lowered to revive neurons (V3.3)
 
 # Regularization
-dropout_rate: 0.3  # Increased for smoothing (V3.3)
-spike_target_rate: 0.25
+dropout_rate: 0.5  # Increased for regularization (V3.3)
+spike_target_rate: 0.10  # Realistic target (V3.3)
 attn_residual_ratio: 0.1
+drop_path_rate: 0.1  # Stochastic depth (V3.3)
 
 # Feature toggles
 use_alignment: true
