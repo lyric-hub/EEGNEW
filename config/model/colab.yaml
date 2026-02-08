@@ -22,6 +22,7 @@ v_threshold: 0.5   # Lowered to revive dead neurons (V3.4)
 # Regularization
 dropout_rate: 0.5  # Increased for regularization (V3.3)
 spike_target_rate: 0.10  # Realistic target (V3.3)
+noise_std: 0.1  # [NEW] Noise injection for dynamic SNN input
 attn_residual_ratio: 0.1
 drop_path_rate: 0.1  # Stochastic depth (V3.3)
 
