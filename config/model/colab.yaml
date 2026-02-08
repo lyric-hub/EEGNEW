@@ -17,7 +17,7 @@ mlp_ratio: 4.0
 
 # SNN parameters
 tau: 2.0           # Tuned for responsiveness (V3.3)
-v_threshold: 0.8   # Lowered to revive neurons (V3.3)
+v_threshold: 0.5   # Lowered to revive dead neurons (V3.4)
 
 # Regularization
 dropout_rate: 0.5  # Increased for regularization (V3.3)

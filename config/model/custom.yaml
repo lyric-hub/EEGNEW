@@ -40,5 +40,5 @@ attention_pool: 8         # Pool factor for attention
 # LIF Neuron Parameters (TUNED)
 # ============================================
 tau: 2.0                  # Membrane time constant (reduced for V3.3)
-v_threshold: 0.8          # Firing threshold (lowered for V3.3)
+v_threshold: 0.5          # Firing threshold (lowered for V3.4 - was 0.8)
 spike_target_rate: 0.10   # Target spike rate (realistic for SNNs)
