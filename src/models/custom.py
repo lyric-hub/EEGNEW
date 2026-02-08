@@ -51,7 +51,7 @@ class SpikeRateTracker:
         self.layer_rates = {}
 
     def record(self, spikes: torch.Tensor, layer_name: str = "default") -> torch.Tensor:
-        rate = spikes.detach().mean()
+        rate = (spikes.detach() > 0.0).float().mean()
         self.spike_counts.append(rate)
         if layer_name not in self.layer_rates:
             self.layer_rates[layer_name] = []
@@ -231,8 +231,10 @@ class MultiScaleTemporalEncoder(nn.Module):
         self.branches = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, (1, k), padding=(0, k // 2), bias=False),
-                nn.GroupNorm(min(8, out_channels), out_channels),  # Subject-independent norm
-                ScaleLayer(init_scale=2.0, channels=out_channels),  # Push signals above threshold
+                # Keep GroupNorm for Subject Independence
+                nn.GroupNorm(min(8, out_channels), out_channels),
+                # Add ScaleLayer to boost signal over LIF threshold (init=2.0)
+                ScaleLayer(init_scale=2.0, channels=out_channels),
                 neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan()),
             )
             for k in [kernel_gamma, kernel_beta, kernel_mu]
@@ -250,10 +252,21 @@ class MultiScaleTemporalEncoder(nn.Module):
         weights = F.softmax(self.fusion_weights, dim=0)
         outputs = []
         for i, (branch, w) in enumerate(zip(self.branches, weights)):
-            out = branch(x) * w
+            # Unpack the sequential to access the LIF node directly
+            conv, gn, scale, lif = branch[0], branch[1], branch[2], branch[3]
+
+            # Forward pass through layers
+            x_feat = conv(x)
+            x_feat = gn(x_feat)
+            x_feat = scale(x_feat)  # Boost signal
+            out_raw = lif(x_feat)   # Fire spikes
+
+            # FIX: Record raw binary spikes BEFORE weighting
             if tracker:
-                tracker.record(out, f"enc_{self.names[i]}")
-            outputs.append(out)
+                tracker.record(out_raw, f"enc_{self.names[i]}")
+
+            outputs.append(out_raw * w)
+
         return sum(outputs)
 
 
@@ -285,22 +298,29 @@ class SpikingSelfAttention(nn.Module):
         self.k_proj = nn.Linear(dim, dim, bias=False)
         self.v_proj = nn.Linear(dim, dim, bias=False)
 
-        self.q_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
-        self.k_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
-        self.v_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
-        self.attn_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        # FIX 4: Add LayerNorms before LIF to normalize input current
+        self.q_norm = nn.LayerNorm(dim)
+        self.k_norm = nn.LayerNorm(dim)
+        self.v_norm = nn.LayerNorm(dim)
+
+        # FIX 5: Lower threshold to 0.5 (easier to fire)
+        self.q_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
+        self.k_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
+        self.v_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
+        self.attn_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
 
         self.proj_out = nn.Linear(dim, dim, bias=False)
         self.proj_norm = nn.LayerNorm(dim)
-        self.proj_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.proj_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
         T, B, N, D = x.shape
 
-        q = self.q_lif(self.q_proj(x))
-        k = self.k_lif(self.k_proj(x))
-        v = self.v_lif(self.v_proj(x))
+        # Apply Norm -> LIF
+        q = self.q_lif(self.q_norm(self.q_proj(x)))
+        k = self.k_lif(self.k_norm(self.k_proj(x)))
+        v = self.v_lif(self.v_norm(self.v_proj(x)))
 
         if tracker:
             tracker.record(q, "ssa_q")
@@ -317,15 +337,17 @@ class SpikingSelfAttention(nn.Module):
         attn_weights = F.softmax(attn_score, dim=-1)
 
         if self.attn_residual_ratio > 0:
-            # Gradient-preserving: mix softmax weights with LIF spikes
             attn_spike = self.attn_lif(attn_weights)
+            # Record spike BEFORE mixing
+            if tracker:
+                tracker.record(attn_spike, "ssa_attn")
+
             r = self.attn_residual_ratio
             attn_out = (1 - r) * attn_spike + r * attn_weights
         else:
             attn_out = self.attn_lif(attn_weights)
-
-        if tracker:
-            tracker.record(attn_out, "ssa_attn")
+            if tracker:
+                tracker.record(attn_out, "ssa_attn")
 
         attn_out = self.dropout(attn_out)
         out = attn_out @ v
@@ -527,6 +549,7 @@ class CustomModel(BaseModel):
         spike_target_rate: float = 0.25,
         attn_residual_ratio: float = 0.1,
         drop_path_rate: float = 0.1,  # Stochastic depth for regularization
+        noise_std: float = 0.1,  # Temporal noise for dynamic SNN input
         motor_indices: Optional[list[int]] = None,
         # Legacy compatibility args (unused in v3.1)
         f1: int = 32,
@@ -547,6 +570,7 @@ class CustomModel(BaseModel):
         self.input_channels = n_channels
         self.use_multiscale = use_multiscale
         self.use_learned_aggregation = use_learned_aggregation
+        self.noise_std = noise_std
 
         # Default motor indices for BNCI2014_001
         if motor_indices is None:
@@ -636,8 +660,15 @@ class CustomModel(BaseModel):
 
         tokens = tokens + self.pos_embed
 
-        # 4. SNN Simulation
+        # 4. SNN Simulation with Noise Injection
+        # Instead of a "frozen statue", inject noise to create dynamic input
         x_seq = tokens.unsqueeze(0).repeat(self.t_steps, 1, 1, 1)
+        
+        # Add temporal noise during training to simulate live signals
+        if self.training and self.noise_std > 0:
+            noise = torch.randn_like(x_seq) * self.noise_std
+            x_seq = x_seq + noise
+        
         for block in self.blocks:
             x_seq = block(x_seq, self.spike_tracker)
 

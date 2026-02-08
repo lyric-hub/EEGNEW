@@ -28,6 +28,7 @@ seed: 42
 # Augmentation settings (training only)
 use_augmentation: true
 aug_channel_dropout: 0.2
+aug_channel_shuffle: 0.0  # [IMPORTANT] Explicitly set to 0 to preserve spatial topo
 aug_time_shift: 50
 aug_time_warp: 0.2
 aug_noise_prob: 0.3

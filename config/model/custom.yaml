@@ -1,44 +1,48 @@
-# S-MSTT v2 Model Configuration
-# Enhanced Spiking Multilevel Spatio-Temporal Transformer
+# S-MSTT v3.3 Configuration
+# Matches src.models.custom.CustomModel arguments
 
 name: CustomModel
 
-# Input dimensions (auto-detected from MOABB data)
+# Auto-detected from data (can be left null or explicit)
 n_channels: 22
-n_samples: 1126
+n_samples: 1125
 n_classes: 4
 
 # ============================================
-# SNN Simulation
+# SNN Dynamics (The "Pulse")
 # ============================================
-t_steps: 16               # Increased for better temporal integration
+t_steps: 16               # Time steps for integration
+tau: 2.0                  # Membrane time constant
+v_threshold: 0.5          # Threshold (0.5 fixes "dead neuron" issue)
+spike_target_rate: 0.25   # Target firing rate (25%)
+noise_std: 0.1            # [NEW] Noise injection for dynamic input
 
 # ============================================
-# Architecture (INCREASED CAPACITY)
+# Transformer Architecture
 # ============================================
-f1: 32                    # Initial feature channels (was 16)
-depth_multiplier: 2       # Spatial conv depth multiplier
-num_heads: 4              # Attention heads in SSA
-sample_rate: 250          # EEG sample rate
+embed_dim: 64             # Feature dimension
+depth: 4                  # Number of Transformer blocks
+num_heads: 4              # Attention heads
+mlp_ratio: 4.0            # Feed-forward expansion ratio
+attn_residual_ratio: 0.1  # Gradient flow preservation
 
 # ============================================
-# Signal Processing
+# Modules Toggle
 # ============================================
-use_preprocessing: false  # Disabled - MOABB already epochs correctly
+use_alignment: true           # Euclidean Alignment (Subject Independence)
+use_channel_attention: true   # Motor Cortex Attention
+use_multiscale: true          # Mu/Beta/Gamma Encoder
+use_learned_aggregation: true # Attention-based temporal pooling
 
 # ============================================
-# Regularization (INCREASED)
+# Regularization
 # ============================================
-dropout_rate: 0.5         # Dropout probability (increased for V3.3)
+dropout_rate: 0.5         # Dropout
+drop_path_rate: 0.1       # Stochastic Depth
+alignment_momentum: 0.1   # For Euclidean Alignment
 
 # ============================================
-# Memory Optimization
+# Legacy / Unused (Kept for compatibility if needed)
 # ============================================
-attention_pool: 8         # Pool factor for attention
-
-# ============================================
-# LIF Neuron Parameters (TUNED)
-# ============================================
-tau: 2.0                  # Membrane time constant (reduced for V3.3)
-v_threshold: 0.5          # Firing threshold (lowered for V3.4 - was 0.8)
-spike_target_rate: 0.10   # Target spike rate (realistic for SNNs)
+f1: 32
+depth_multiplier: 2

@@ -99,6 +99,7 @@ def load_moabb_data(
     if use_augmentation:
         augmentation = EEGAugmentation(
             channel_dropout_prob=getattr(config.data, 'aug_channel_dropout', 0.2),
+            channel_shuffle_prob=0.0,  # Disabled: prevents spatial corruption
             time_shift_max=getattr(config.data, 'aug_time_shift', 50),
             time_warp_prob=getattr(config.data, 'aug_time_warp', 0.2),
             gaussian_noise_prob=getattr(config.data, 'aug_noise_prob', 0.3),

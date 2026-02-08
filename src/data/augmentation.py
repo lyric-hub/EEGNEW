@@ -35,7 +35,7 @@ class EEGAugmentation:
     def __init__(
         self,
         channel_dropout_prob: float = 0.2,
-        channel_shuffle_prob: float = 0.1,
+        channel_shuffle_prob: float = 0.0,  # Disabled: safer for spatial learning
         amplitude_scale_range: tuple[float, float] = (0.8, 1.2),
         random_gain_prob: float = 0.3,
         time_shift_max: int = 50,
@@ -105,13 +105,24 @@ class EEGAugmentation:
         return x
     
     def channel_shuffle(self, x: torch.Tensor) -> torch.Tensor:
-        """Swap neighboring channels (preserves spatial structure)."""
+        """Swap ONLY adjacent channels to preserve broad spatial structure.
+        
+        Note: Only swaps neighboring indices (i, i+1). This preserves spatial
+        topography while adding slight variation. If channel ordering is random,
+        consider setting channel_shuffle_prob=0.0 in config.
+        """
         C, T = x.shape
         if C < 2:
             return x
-        idx1, idx2 = random.sample(range(C), 2)
+        
+        # FIX: Only swap adjacent indices to preserve spatial structure
+        idx1 = random.randint(0, C - 2)
+        idx2 = idx1 + 1
+        
         x = x.clone()
-        x[[idx1, idx2]] = x[[idx2, idx1]]
+        temp = x[idx1].clone()
+        x[idx1] = x[idx2]
+        x[idx2] = temp
         return x
     
     def amplitude_scaling(self, x: torch.Tensor) -> torch.Tensor:
