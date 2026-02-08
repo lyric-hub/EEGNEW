@@ -193,8 +193,28 @@ class DropPath(nn.Module):
 # =============================================================================
 
 
+class ScaleLayer(nn.Module):
+    """Learnable scaling to push signals above firing threshold.
+    
+    This helps revive "dead" neurons by amplifying signals before the LIF layer.
+    Can use scalar or channel-wise scaling.
+    """
+    
+    def __init__(self, init_scale: float = 2.0, channels: int = None) -> None:
+        super().__init__()
+        if channels:
+            # Channel-wise scaling: shape (1, C, 1, 1) for 4D tensors
+            self.scale = nn.Parameter(torch.ones(1, channels, 1, 1) * init_scale)
+        else:
+            # Scalar scaling
+            self.scale = nn.Parameter(torch.tensor(init_scale))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.scale
+
+
 class MultiScaleTemporalEncoder(nn.Module):
-    """Mu/Beta/Gamma rhythm-aligned encoding."""
+    """Mu/Beta/Gamma rhythm-aligned encoding with learnable scaling."""
 
     def __init__(
         self,
@@ -211,7 +231,8 @@ class MultiScaleTemporalEncoder(nn.Module):
         self.branches = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, (1, k), padding=(0, k // 2), bias=False),
-                nn.GroupNorm(min(8, out_channels), out_channels),  # Adaptive GroupNorm
+                nn.GroupNorm(min(8, out_channels), out_channels),  # Subject-independent norm
+                ScaleLayer(init_scale=2.0, channels=out_channels),  # Push signals above threshold
                 neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan()),
             )
             for k in [kernel_gamma, kernel_beta, kernel_mu]
