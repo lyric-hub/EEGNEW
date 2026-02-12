@@ -1,48 +1,33 @@
-# S-MSTT v3.3 Configuration
-# Matches src.models.custom.CustomModel arguments
+# S-MSTT v3.5 Model Configuration
+# Spiking Multilevel Spatio-Temporal Transformer
 
-name: CustomModel
+# Architecture
+embed_dim: 64
+depth: 4
+num_heads: 4
+mlp_ratio: 4.0
+t_steps: 16
+tau: 2.0
+v_threshold: 0.5
+dropout_rate: 0.1
 
-# Auto-detected from data (can be left null or explicit)
-n_channels: 22
-n_samples: 1125
-n_classes: 4
+# Feature modules
+use_alignment: true
+use_channel_attention: true
+use_multiscale: true
+use_learned_aggregation: true
 
-# ============================================
-# SNN Dynamics (The "Pulse")
-# ============================================
-t_steps: 16               # Time steps for integration
-tau: 2.0                  # Membrane time constant
-v_threshold: 0.5          # Threshold (0.5 fixes "dead neuron" issue)
-spike_target_rate: 0.25   # Target firing rate (25%)
-noise_std: 0.1            # [NEW] Noise injection for dynamic input
+# Alignment & Domain Adaptation (v3.5)
+alignment_momentum: 0.1
+shrinkage_alpha: 0.1        # Ledoit-Wolf covariance shrinkage for EA
 
-# ============================================
-# Transformer Architecture
-# ============================================
-embed_dim: 64             # Feature dimension
-depth: 4                  # Number of Transformer blocks
-num_heads: 4              # Attention heads
-mlp_ratio: 4.0            # Feed-forward expansion ratio
-attn_residual_ratio: 0.1  # Gradient flow preservation
+# SNN Regularization
+spike_target_rate: 0.25
+noise_std: 0.1
+drop_path_rate: 0.1
 
-# ============================================
-# Modules Toggle
-# ============================================
-use_alignment: true           # Euclidean Alignment (Subject Independence)
-use_channel_attention: true   # Motor Cortex Attention
-use_multiscale: true          # Mu/Beta/Gamma Encoder
-use_learned_aggregation: true # Attention-based temporal pooling
+# Attention
+attn_residual_ratio: 0.1
 
-# ============================================
-# Regularization
-# ============================================
-dropout_rate: 0.5         # Dropout
-drop_path_rate: 0.1       # Stochastic Depth
-alignment_momentum: 0.1   # For Euclidean Alignment
-
-# ============================================
-# Legacy / Unused (Kept for compatibility if needed)
-# ============================================
-f1: 32
-depth_multiplier: 2
+# Motor cortex channel indices (for BNCI2014_001)
+motor_indices: [6, 7, 8, 9, 10, 11, 12]

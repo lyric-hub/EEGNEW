@@ -2,6 +2,8 @@
 
 Uses MOABB's MotorImagery paradigm to load and preprocess BCI data
 with proper subject-based splits for subject-independent evaluation.
+
+v3.5: Added subject ID propagation for domain adaptation (GRL + MMD).
 """
 
 from __future__ import annotations
@@ -25,10 +27,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _extract_subject_ids(metadata: "pd.DataFrame") -> np.ndarray:
+    """Extract and encode subject IDs from MOABB metadata.
+
+    Args:
+        metadata: MOABB metadata DataFrame with 'subject' column.
+
+    Returns:
+        Integer-encoded subject IDs array.
+    """
+    subject_encoder = LabelEncoder()
+    return subject_encoder.fit_transform(metadata["subject"].values)
+
+
 def load_moabb_data(
     config: DictConfig,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Load EEG data using MOABB paradigm with subject-based splits.
+
+    Returns DataLoaders yielding (data, label, subject_id) tuples.
+    Subject IDs are integer-encoded per split (0-indexed within each split).
 
     Args:
         config: Hydra configuration containing data parameters.
@@ -50,48 +68,56 @@ def load_moabb_data(
         resample=paradigm_config.resample,
     )
 
-    # Load training data
+    # Load data with metadata (subject IDs needed for domain adaptation)
     train_subjects = list(config.data.train_subjects)
     logger.info("Loading training data for subjects: %s", train_subjects)
-    X_train, y_train, _ = paradigm.get_data(dataset, subjects=train_subjects)
+    X_train, y_train, meta_train = paradigm.get_data(dataset, subjects=train_subjects)
 
-    # Load validation data from separate subjects (subject-independent)
     val_subjects = list(config.data.val_subjects)
     logger.info("Loading validation data for subjects: %s", val_subjects)
-    X_val, y_val, _ = paradigm.get_data(dataset, subjects=val_subjects)
+    X_val, y_val, meta_val = paradigm.get_data(dataset, subjects=val_subjects)
 
-    # Load test data
     test_subjects = list(config.data.test_subjects)
     logger.info("Loading test data for subjects: %s", test_subjects)
-    X_test, y_test, _ = paradigm.get_data(dataset, subjects=test_subjects)
+    X_test, y_test, meta_test = paradigm.get_data(dataset, subjects=test_subjects)
 
-    # Encode labels to integers
+    # Encode class labels
     label_encoder = LabelEncoder()
     label_encoder.fit(np.concatenate([y_train, y_val, y_test]))
     y_train_encoded = label_encoder.transform(y_train)
     y_val_encoded = label_encoder.transform(y_val)
     y_test_encoded = label_encoder.transform(y_test)
 
+    # Encode subject IDs (0-indexed within each split)
+    subj_train = _extract_subject_ids(meta_train)
+    subj_val = _extract_subject_ids(meta_val)
+    subj_test = _extract_subject_ids(meta_test)
+
+    n_train_subjects = len(np.unique(subj_train))
     logger.info("Classes: %s", label_encoder.classes_)
     logger.info(
-        "Train: %d, Val: %d, Test: %d",
+        "Train: %d samples (%d subjects), Val: %d, Test: %d",
         len(X_train),
+        n_train_subjects,
         len(X_val),
         len(X_test),
     )
 
-    # Create PyTorch tensors
+    # Create 3-tuple TensorDatasets: (data, label, subject_id)
     train_dataset = TensorDataset(
         torch.from_numpy(X_train.astype(np.float32)),
         torch.from_numpy(y_train_encoded.astype(np.int64)),
+        torch.from_numpy(subj_train.astype(np.int64)),
     )
     val_dataset = TensorDataset(
         torch.from_numpy(X_val.astype(np.float32)),
         torch.from_numpy(y_val_encoded.astype(np.int64)),
+        torch.from_numpy(subj_val.astype(np.int64)),
     )
     test_dataset = TensorDataset(
         torch.from_numpy(X_test.astype(np.float32)),
         torch.from_numpy(y_test_encoded.astype(np.int64)),
+        torch.from_numpy(subj_test.astype(np.int64)),
     )
 
     # Apply augmentation to training data only

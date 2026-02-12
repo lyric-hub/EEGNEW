@@ -185,6 +185,10 @@ class EEGAugmentation:
 class AugmentedDataset(torch.utils.data.Dataset):
     """Wrapper dataset that applies augmentation to training data.
     
+    Handles both 2-tuple (data, label) and 3-tuple (data, label, subject_id)
+    datasets. Only the data tensor is augmented; labels and subject IDs
+    pass through unchanged.
+
     Args:
         dataset: Original dataset (TensorDataset or similar).
         augmentation: EEGAugmentation instance.
@@ -204,10 +208,13 @@ class AugmentedDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.dataset)
     
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        x, y = self.dataset[idx]
+    def __getitem__(self, idx: int) -> tuple:
+        items = self.dataset[idx]
+        x = items[0]
         
         if self.apply_augmentation and self.augmentation is not None:
             x = self.augmentation(x)
         
-        return x, y
+        # Return (augmented_data, label) or (augmented_data, label, subject_id)
+        return (x, *items[1:])
+

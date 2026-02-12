@@ -21,7 +21,7 @@ import hydra
 import mlflow
 import pandas as pd
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -41,7 +41,7 @@ def build_model(
     n_samples: int,
     n_classes: int,
 ) -> torch.nn.Module:
-    """Build S-MSTT v3.1 model from configuration.
+    """Build S-MSTT v3.5 model from configuration.
 
     Args:
         config: Model configuration.
@@ -50,36 +50,45 @@ def build_model(
         n_classes: Number of classes from data.
 
     Returns:
-        Initialized S-MSTT v3.1 model.
+        Initialized S-MSTT v3.5 model.
     """
+    # Auto-detect n_subjects from train_subjects config
+    n_subjects = len(list(config.data.train_subjects))
+
     model = CustomModel(
         n_channels=n_channels,
         n_samples=n_samples,
         n_classes=n_classes,
-        # S-MSTT v3.1 parameters
         embed_dim=config.model.get("embed_dim", 64),
         depth=config.model.get("depth", 4),
         num_heads=config.model.get("num_heads", 4),
         mlp_ratio=config.model.get("mlp_ratio", 4.0),
-        t_steps=config.model.get("t_steps", 4),
+        t_steps=config.model.get("t_steps", 16),
         tau=config.model.get("tau", 2.0),
+        v_threshold=config.model.get("v_threshold", 0.5),
         dropout_rate=config.model.get("dropout_rate", 0.1),
         use_alignment=config.model.get("use_alignment", True),
         use_channel_attention=config.model.get("use_channel_attention", True),
         use_multiscale=config.model.get("use_multiscale", True),
         use_learned_aggregation=config.model.get("use_learned_aggregation", True),
         alignment_momentum=config.model.get("alignment_momentum", 0.1),
+        shrinkage_alpha=config.model.get("shrinkage_alpha", 0.1),
         spike_target_rate=config.model.get("spike_target_rate", 0.25),
         attn_residual_ratio=config.model.get("attn_residual_ratio", 0.1),
+        drop_path_rate=config.model.get("drop_path_rate", 0.1),
+        noise_std=config.model.get("noise_std", 0.1),
+        sample_rate=config.data.paradigm.get("resample", 250),
         motor_indices=config.model.get("motor_indices", [6, 7, 8, 9, 10, 11, 12]),
+        n_subjects=n_subjects,
     )
 
     logger.info(
-        "Built S-MSTT v3.1 with %d parameters (channels=%d, samples=%d, classes=%d)",
+        "Built S-MSTT v3.5 with %d parameters (channels=%d, samples=%d, classes=%d, subjects=%d)",
         model.count_parameters(),
         n_channels,
         n_samples,
         n_classes,
+        n_subjects,
     )
 
     return model
@@ -125,7 +134,11 @@ def main(config: DictConfig) -> float:
     model = build_model(config, n_channels, n_samples, n_classes)
 
     # Training setup
-    output_dir = Path(config.paths.models)
+    checkpoint_dir = Path(config.paths.models)
+
+    # Set checkpoint_dir in training config for Trainer to use
+    with open_dict(config):
+        config.training.checkpoint_dir = str(checkpoint_dir)
 
     # MLflow setup
     if config.training.logging.use_mlflow:
@@ -139,6 +152,8 @@ def main(config: DictConfig) -> float:
             "n_samples": n_samples,
             "n_classes": n_classes,
             "t_steps": config.model.get("t_steps", 8),
+            "domain_loss_weight": config.training.get("domain_loss_weight", 0.1),
+            "mmd_loss_weight": config.training.get("mmd_loss_weight", 0.1),
         })
 
     try:
@@ -146,7 +161,6 @@ def main(config: DictConfig) -> float:
             model=model,
             config=config,
             device=device,
-            output_dir=output_dir,
         )
 
         # Resume from checkpoint if specified
@@ -181,7 +195,7 @@ def main(config: DictConfig) -> float:
                 "test_accuracy": test_acc,
                 "test_kappa": test_kappa,
             })
-            mlflow.log_artifact(str(output_dir / "best_model.pt"))
+            mlflow.log_artifact(str(checkpoint_dir / "best_model.pt"))
 
 
 

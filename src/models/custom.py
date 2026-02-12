@@ -1,12 +1,18 @@
 """
-S-MSTT v3.3: Spiking Multilevel Spatio-Temporal Transformer
+S-MSTT v3.5: Spiking Multilevel Spatio-Temporal Transformer
 Subject-Independent EEG Classification
 
-v3.3 Improvements:
-- DropPath (Stochastic Depth) for regularization
-- Beta-biased multi-scale fusion [γ=0.2, β=0.6, μ=0.2]
-- EEG data augmentation (channel/temporal/amplitude)
-- Adaptive GroupNorm
+v3.5 Improvements:
+- Gradient Reversal Layer + adversarial subject discriminator
+- MMD loss integration via get_features()
+- Ledoit-Wolf covariance shrinkage in Euclidean Alignment
+- Subject ID propagation through data pipeline
+
+v3.4 Improvements:
+- Fix v_threshold propagation to ALL LIF neurons (was dead param)
+- MMD domain adaptation loss class
+- Per-layer spike rate logging
+- Legacy parameter cleanup
 
 Core Features:
 - SVD-based Euclidean Alignment for subject independence
@@ -15,11 +21,13 @@ Core Features:
 - GroupNorm instead of BatchNorm (no subject-specific statistics)
 - Complete spike rate tracking across all LIF neurons
 - Learned temporal aggregation over SNN timesteps
+- MMD + GRL domain adaptation for subject-invariant features
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 import torch
@@ -82,19 +90,39 @@ class SpikeRateTracker:
 
 
 class EuclideanAlignment(nn.Module):
-    """SVD-based Euclidean Alignment for subject independence."""
+    """SVD-based Euclidean Alignment with Ledoit-Wolf shrinkage.
+
+    Whitens EEG covariance to reduce subject-specific patterns.
+    Shrinkage regularizes the covariance estimate for numerical stability.
+
+    Args:
+        channels: Number of EEG channels.
+        momentum: Running average momentum.
+        warmup_batches: Identity transform during initial batches.
+        shrinkage_alpha: Ledoit-Wolf shrinkage factor (0=no shrinkage, 1=identity).
+    """
 
     def __init__(
         self,
         channels: int,
         momentum: float = 0.1,
         warmup_batches: int = 10,
+        shrinkage_alpha: float = 0.1,
     ) -> None:
         super().__init__()
         self.momentum = momentum
         self.warmup_batches = warmup_batches
+        self.shrinkage_alpha = shrinkage_alpha
         self.register_buffer("running_R", torch.eye(channels))
         self.register_buffer("num_batches_tracked", torch.tensor(0, dtype=torch.long))
+
+    def _shrink(self, R: torch.Tensor) -> torch.Tensor:
+        """Apply Ledoit-Wolf shrinkage: R_shrunk = (1-α)R + α·tr(R)/d·I."""
+        if self.shrinkage_alpha <= 0:
+            return R
+        d = R.shape[0]
+        mu = torch.trace(R) / d
+        return (1 - self.shrinkage_alpha) * R + self.shrinkage_alpha * mu * torch.eye(d, device=R.device, dtype=R.dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 4:
@@ -115,15 +143,12 @@ class EuclideanAlignment(nn.Module):
                     + self.momentum * R_batch.detach()
                 )
             if self.num_batches_tracked < self.warmup_batches:
-                # Use identity transform during warmup to maintain gradient flow
                 whitening_mat = torch.eye(C, device=x.device, dtype=x.dtype)
                 x_aligned = torch.matmul(whitening_mat, x_centered)
                 return x_aligned.unsqueeze(1)
 
-        # Detach running_R: EA is a preprocessing transform, not learned.
-        # Gradients should flow through the whitening operation but not
-        # update the covariance estimate (which is computed from data statistics).
-        R = self.running_R.detach()
+        # Shrink covariance for numerical stability before SVD
+        R = self._shrink(self.running_R.detach())
         try:
             U, S, Vh = torch.linalg.svd(R)
             S = torch.clamp(S, min=1e-5)
@@ -222,6 +247,7 @@ class MultiScaleTemporalEncoder(nn.Module):
         out_channels: int,
         sample_rate: int = 250,
         tau: float = 2.0,
+        v_threshold: float = 0.5,
     ) -> None:
         super().__init__()
         kernel_mu = self._make_odd(int(0.1 * sample_rate))
@@ -235,7 +261,7 @@ class MultiScaleTemporalEncoder(nn.Module):
                 nn.GroupNorm(min(8, out_channels), out_channels),
                 # Add ScaleLayer to boost signal over LIF threshold (init=2.0)
                 ScaleLayer(init_scale=2.0, channels=out_channels),
-                neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan()),
+                neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan()),
             )
             for k in [kernel_gamma, kernel_beta, kernel_mu]
         ])
@@ -285,6 +311,7 @@ class SpikingSelfAttention(nn.Module):
         tau: float = 2.0,
         dropout: float = 0.1,
         attn_residual_ratio: float = 0.1,
+        v_threshold: float = 0.5,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0
@@ -298,20 +325,18 @@ class SpikingSelfAttention(nn.Module):
         self.k_proj = nn.Linear(dim, dim, bias=False)
         self.v_proj = nn.Linear(dim, dim, bias=False)
 
-        # FIX 4: Add LayerNorms before LIF to normalize input current
         self.q_norm = nn.LayerNorm(dim)
         self.k_norm = nn.LayerNorm(dim)
         self.v_norm = nn.LayerNorm(dim)
 
-        # FIX 5: Lower threshold to 0.5 (easier to fire)
-        self.q_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
-        self.k_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
-        self.v_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
-        self.attn_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
+        self.q_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
+        self.k_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
+        self.v_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
+        self.attn_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
 
         self.proj_out = nn.Linear(dim, dim, bias=False)
         self.proj_norm = nn.LayerNorm(dim)
-        self.proj_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=0.5, surrogate_function=surrogate.ATan())
+        self.proj_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
@@ -377,17 +402,18 @@ class SpikingMLP(nn.Module):
         hidden_features: Optional[int] = None,
         dropout: float = 0.1,
         tau: float = 2.0,
+        v_threshold: float = 0.5,
     ) -> None:
         super().__init__()
         hidden_features = hidden_features or in_features * 4
 
         self.fc1 = nn.Linear(in_features, hidden_features, bias=False)
         self.norm1 = nn.LayerNorm(hidden_features)
-        self.lif1 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.lif1 = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
 
         self.fc2 = nn.Linear(hidden_features, in_features, bias=False)
         self.norm2 = nn.LayerNorm(in_features)
-        self.lif2 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.lif2 = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
 
         self.drop = nn.Dropout(dropout)
 
@@ -425,10 +451,11 @@ class SBlock(nn.Module):
         tau: float = 2.0,
         attn_residual_ratio: float = 0.1,
         drop_path: float = 0.0,
+        v_threshold: float = 0.5,
     ) -> None:
         super().__init__()
-        self.attn = SpikingSelfAttention(dim, num_heads, tau, dropout, attn_residual_ratio)
-        self.mlp = SpikingMLP(dim, int(dim * mlp_ratio), dropout, tau)
+        self.attn = SpikingSelfAttention(dim, num_heads, tau, dropout, attn_residual_ratio, v_threshold)
+        self.mlp = SpikingMLP(dim, int(dim * mlp_ratio), dropout, tau, v_threshold)
         self.drop_path = DropPath(drop_path) if drop_path > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor, tracker: Optional[SpikeRateTracker] = None) -> torch.Tensor:
@@ -451,15 +478,16 @@ class SpatioTemporalTokenizer(nn.Module):
         embed_dim: int = 64,
         time_points: int = 1125,
         tau: float = 2.0,
+        v_threshold: float = 0.5,
     ) -> None:
         super().__init__()
         self.spatial_conv = nn.Conv2d(1, embed_dim, (in_channels, 1), bias=False)
-        self.gn1 = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
-        self.lif1 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.gn1 = nn.GroupNorm(8, embed_dim)
+        self.lif1 = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
 
         self.temporal_conv = nn.Conv2d(embed_dim, embed_dim, (1, 25), stride=(1, 5), padding=(0, 12), bias=False)
-        self.gn2 = nn.GroupNorm(8, embed_dim)  # GroupNorm for subject independence
-        self.lif2 = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
+        self.gn2 = nn.GroupNorm(8, embed_dim)
+        self.lif2 = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
 
         self.pool = nn.AvgPool2d((1, 4))
         self.seq_len = time_points // (5 * 4)
@@ -498,35 +526,179 @@ class LearnedTemporalAggregation(nn.Module):
 
 
 # =============================================================================
+# DOMAIN ADAPTATION: MMD LOSS
+# =============================================================================
+
+
+class MaximumMeanDiscrepancy(nn.Module):
+    """Maximum Mean Discrepancy with RBF kernel for domain adaptation.
+
+    Encourages subject-invariant feature representations by minimizing
+    the distribution distance between feature batches. Used during training
+    to reduce subject-specific information in learned features.
+
+    Args:
+        bandwidth: RBF kernel bandwidth. If None, uses median heuristic.
+    """
+
+    def __init__(self, bandwidth: Optional[float] = None) -> None:
+        super().__init__()
+        self.bandwidth = bandwidth
+
+    def _rbf_kernel(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Compute RBF kernel matrix between x and y."""
+        xx = (x * x).sum(dim=1, keepdim=True)
+        yy = (y * y).sum(dim=1, keepdim=True)
+        dist_sq = xx + yy.t() - 2.0 * x @ y.t()
+
+        if self.bandwidth is None:
+            # Median heuristic for bandwidth selection
+            median_dist = torch.median(dist_sq.clamp(min=1e-8))
+            bandwidth = median_dist.detach()
+        else:
+            bandwidth = self.bandwidth
+
+        return torch.exp(-dist_sq / (2.0 * bandwidth + 1e-8))
+
+    def forward(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compute MMD loss between source and target feature distributions.
+
+        Args:
+            source: Feature tensor of shape (N_s, D).
+            target: Feature tensor of shape (N_t, D).
+
+        Returns:
+            Scalar MMD loss value, clamped to [0, 10] for numerical stability.
+        """
+        k_ss = self._rbf_kernel(source, source)
+        k_tt = self._rbf_kernel(target, target)
+        k_st = self._rbf_kernel(source, target)
+
+        mmd = k_ss.mean() + k_tt.mean() - 2.0 * k_st.mean()
+        return mmd.clamp(min=0.0, max=10.0)
+
+
+# =============================================================================
+# DOMAIN ADAPTATION: GRADIENT REVERSAL LAYER
+# =============================================================================
+
+
+class _GradientReversalFunction(torch.autograd.Function):
+    """Autograd function that reverses gradients during backward pass."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, lambda_: float) -> torch.Tensor:
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple:
+        return -ctx.lambda_ * grad_output, None
+
+
+class GradientReversalLayer(nn.Module):
+    """Gradient Reversal Layer for adversarial domain adaptation.
+
+    Forward: identity. Backward: reverses gradients by factor -λ.
+    λ is scheduled from 0→1 over training to prevent early destabilization.
+
+    Args:
+        max_lambda: Maximum reversal strength (reached at end of training).
+    """
+
+    def __init__(self, max_lambda: float = 1.0) -> None:
+        super().__init__()
+        self.max_lambda = max_lambda
+        self._progress: float = 0.0  # Set externally: epoch / total_epochs
+
+    @property
+    def current_lambda(self) -> float:
+        """Compute current λ using the schedule from Ganin et al. 2016."""
+        p = self._progress
+        return self.max_lambda * (2.0 / (1.0 + math.exp(-10 * p)) - 1.0)
+
+    def set_progress(self, progress: float) -> None:
+        """Update training progress (0.0 to 1.0)."""
+        self._progress = min(max(progress, 0.0), 1.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _GradientReversalFunction.apply(x, self.current_lambda)
+
+
+class SubjectDiscriminator(nn.Module):
+    """Small MLP that predicts subject identity from features.
+
+    Used with GRL to encourage subject-invariant representations.
+
+    Args:
+        feature_dim: Input feature dimension (embed_dim from encoder).
+        n_subjects: Number of training subjects to classify.
+        hidden_dim: Hidden layer dimension.
+        dropout: Dropout rate.
+    """
+
+    def __init__(
+        self,
+        feature_dim: int,
+        n_subjects: int,
+        hidden_dim: int = 64,
+        dropout: float = 0.3,
+    ) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, n_subjects),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Predict subject ID from features.
+
+        Args:
+            x: Feature tensor of shape (B, D).
+
+        Returns:
+            Subject logits of shape (B, n_subjects).
+        """
+        return self.net(x)
+
+
+# =============================================================================
 # MAIN MODEL
 # =============================================================================
 
 
 class CustomModel(BaseModel):
     """
-    S-MSTT v3.3: Spiking Multilevel Spatio-Temporal Transformer
+    S-MSTT v3.5: Spiking Multilevel Spatio-Temporal Transformer
     Subject-Independent EEG Classification
 
     Args:
-        n_channels: Number of EEG channels
-        n_samples: Number of time samples per trial
-        n_classes: Number of output classes
-        embed_dim: Embedding dimension
-        depth: Number of transformer blocks
-        num_heads: Number of attention heads
-        mlp_ratio: MLP hidden dim ratio
-        t_steps: SNN simulation time steps
-        tau: LIF neuron time constant
-        dropout_rate: Dropout rate
-        use_alignment: Enable Euclidean Alignment
-        use_channel_attention: Enable channel attention
-        use_multiscale: Enable multi-scale encoding
-        use_learned_aggregation: Enable learned temporal aggregation
-        alignment_momentum: EA momentum value
-        spike_target_rate: Target spike rate for regularization
-        attn_residual_ratio: Soft attention mix ratio for gradient flow
-        drop_path_rate: Stochastic depth drop rate (0.0 = no drop)
-        motor_indices: Channel indices for motor cortex attention bias
+        n_channels: Number of EEG channels.
+        n_samples: Number of time samples per trial.
+        n_classes: Number of output classes.
+        embed_dim: Embedding dimension.
+        depth: Number of transformer blocks.
+        num_heads: Number of attention heads.
+        mlp_ratio: MLP hidden dim ratio.
+        t_steps: SNN simulation time steps.
+        tau: LIF neuron time constant.
+        v_threshold: Firing threshold for all LIF neurons.
+        dropout_rate: Dropout rate.
+        use_alignment: Enable Euclidean Alignment.
+        use_channel_attention: Enable channel attention.
+        use_multiscale: Enable multi-scale encoding.
+        use_learned_aggregation: Enable learned temporal aggregation.
+        alignment_momentum: EA momentum value.
+        shrinkage_alpha: Ledoit-Wolf shrinkage for EA covariance.
+        spike_target_rate: Target spike rate for regularization.
+        attn_residual_ratio: Soft attention mix ratio for gradient flow.
+        drop_path_rate: Stochastic depth drop rate (0.0 = no drop).
+        noise_std: Gaussian noise std for SNN timestep variation.
+        sample_rate: EEG sample rate in Hz.
+        motor_indices: Channel indices for motor cortex attention bias.
+        n_subjects: Number of training subjects for adversarial discriminator.
     """
 
     def __init__(
@@ -538,31 +710,23 @@ class CustomModel(BaseModel):
         depth: int = 4,
         num_heads: int = 4,
         mlp_ratio: float = 4.0,
-        t_steps: int = 16,  # Increased for better temporal integration
+        t_steps: int = 16,
         tau: float = 2.0,
+        v_threshold: float = 0.5,
         dropout_rate: float = 0.1,
         use_alignment: bool = True,
         use_channel_attention: bool = True,
         use_multiscale: bool = True,
         use_learned_aggregation: bool = True,
         alignment_momentum: float = 0.1,
+        shrinkage_alpha: float = 0.1,
         spike_target_rate: float = 0.25,
         attn_residual_ratio: float = 0.1,
-        drop_path_rate: float = 0.1,  # Stochastic depth for regularization
-        noise_std: float = 0.1,  # Temporal noise for dynamic SNN input
-        motor_indices: Optional[list[int]] = None,
-        # Legacy compatibility args (unused in v3.1)
-        f1: int = 32,
-        depth_multiplier: int = 2,
-        tcn_dilations: tuple = (1, 2, 4, 8),
-        attention_pool: int = 8,
-        v_threshold: float = 1.0,
-        use_preprocessing: bool = True,
+        drop_path_rate: float = 0.1,
+        noise_std: float = 0.1,
         sample_rate: int = 250,
-        hidden_dim: int = 128,
-        tcn_dilation: int = 2,
-        spatial_type: str = "depthwise",
-        learnable_adj: bool = False,
+        motor_indices: Optional[list[int]] = None,
+        n_subjects: int = 7,
     ) -> None:
         super().__init__(n_channels, n_samples, n_classes)
 
@@ -571,56 +735,63 @@ class CustomModel(BaseModel):
         self.use_multiscale = use_multiscale
         self.use_learned_aggregation = use_learned_aggregation
         self.noise_std = noise_std
+        self._features: Optional[torch.Tensor] = None  # For MMD loss
 
         # Default motor indices for BNCI2014_001
         if motor_indices is None:
             motor_indices = [6, 7, 8, 9, 10, 11, 12]
 
-        # 1. Alignment
-        self.align = EuclideanAlignment(n_channels, alignment_momentum) if use_alignment else nn.Identity()
+        # Temporal pooling factor derived from sample rate
+        attention_pool = max(1, sample_rate // 32)
+
+        # 1. Alignment (with Ledoit-Wolf shrinkage)
+        self.align = EuclideanAlignment(n_channels, alignment_momentum, shrinkage_alpha=shrinkage_alpha) if use_alignment else nn.Identity()
 
         # 2. Channel Attention
         self.ch_attn = ChannelAttention(n_channels, motor_indices) if use_channel_attention else nn.Identity()
 
-        # 3. Encoding
+        # 3. Encoding (v_threshold propagated to all LIF neurons)
         if use_multiscale:
-            self.encoder = MultiScaleTemporalEncoder(1, embed_dim, tau=tau)
+            self.encoder = MultiScaleTemporalEncoder(1, embed_dim, sample_rate=sample_rate, tau=tau, v_threshold=v_threshold)
             self.spatial_collapse = nn.Conv2d(embed_dim, embed_dim, (n_channels, 1), bias=False)
-            self.spatial_gn = nn.GroupNorm(min(8, embed_dim), embed_dim)  # Adaptive GroupNorm
-            self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, surrogate_function=surrogate.ATan())
-            
-            # Temporal pooling with configurable factor
+            self.spatial_gn = nn.GroupNorm(min(8, embed_dim), embed_dim)
+            self.spatial_lif = neuron.ParametricLIFNode(init_tau=tau, v_threshold=v_threshold, surrogate_function=surrogate.ATan())
+
             self.temporal_pool = nn.AvgPool2d((1, attention_pool))
             self.seq_len = n_samples // attention_pool
             self.tokenizer = None
         else:
             self.encoder = None
-            self.tokenizer = SpatioTemporalTokenizer(n_channels, embed_dim, n_samples, tau)
+            self.tokenizer = SpatioTemporalTokenizer(n_channels, embed_dim, n_samples, tau, v_threshold)
             self.seq_len = self.tokenizer.seq_len
 
         # 4. Positional Embedding
         self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, embed_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
-        # 5. Transformer (with linearly increasing drop path for deeper blocks)
+        # 5. Transformer (linearly increasing drop path for deeper blocks)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.ModuleList([
-            SBlock(embed_dim, num_heads, mlp_ratio, dropout_rate, tau, attn_residual_ratio, dpr[i])
+            SBlock(embed_dim, num_heads, mlp_ratio, dropout_rate, tau, attn_residual_ratio, dpr[i], v_threshold)
             for i in range(depth)
         ])
 
         # 6. Aggregation
         self.temporal_agg = LearnedTemporalAggregation(embed_dim) if use_learned_aggregation else None
 
-        # 7. Head
+        # 7. Classification Head
         self.norm = nn.LayerNorm(embed_dim)
         self.head_drop = nn.Dropout(dropout_rate)
         self.cls_head = nn.Linear(embed_dim, n_classes)
 
-        # 8. Tracker
+        # 8. Adversarial Domain Head (GRL + Subject Discriminator)
+        self.grl = GradientReversalLayer(max_lambda=1.0)
+        self.domain_head = SubjectDiscriminator(embed_dim, n_subjects)
+
+        # 9. Tracker
         self.spike_tracker = SpikeRateTracker(spike_target_rate, 1.0)
 
-        logger.info(f"S-MSTT v3.2 | seq_len={self.seq_len} | params={self.count_parameters():,}")
+        logger.info(f"S-MSTT v3.5 | v_thr={v_threshold} | subjects={n_subjects} | seq_len={self.seq_len} | params={self.count_parameters():,}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Input validation
@@ -677,19 +848,50 @@ class CustomModel(BaseModel):
         x_gap = x_out.mean(1)
 
         # 6. Classification
+        self._features = x_gap  # Store for MMD loss (keep grad for domain head)
         return self.cls_head(self.head_drop(self.norm(x_gap)))
 
+    def forward_with_domain(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning both class and domain predictions.
+
+        Used during training for adversarial domain adaptation.
+        The GRL automatically reverses gradients flowing to the encoder
+        through the domain head.
+
+        Args:
+            x: Input EEG tensor.
+
+        Returns:
+            Tuple of (class_logits, subject_logits).
+        """
+        class_logits = self.forward(x)
+        # Features stored during forward() — pass through GRL for adversarial training
+        domain_logits = self.domain_head(self.grl(self._features))
+        return class_logits, domain_logits
+
     def get_spike_loss(self) -> torch.Tensor:
+        """Return spike rate regularization loss."""
         return self.spike_tracker.get_loss()
 
     def get_spike_rate(self) -> float:
+        """Return mean spike rate across all tracked layers."""
         return self.spike_tracker.get_mean_rate()
 
     def get_layer_rates(self) -> dict[str, float]:
+        """Return per-layer spike rates for diagnostics."""
         return self.spike_tracker.get_layer_rates()
 
+    def get_features(self) -> Optional[torch.Tensor]:
+        """Return last forward pass GAP features for MMD loss."""
+        return self._features
+
     def reset_snn_states(self) -> None:
+        """Reset all SNN neuron membrane potentials."""
         functional.reset_net(self)
 
     def count_parameters(self) -> int:
+        """Count total trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

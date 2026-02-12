@@ -2,49 +2,20 @@
 # Run: dvc repro
 
 stages:
-  download:
-    cmd: python scripts/download_data.py
-    deps:
-      - scripts/download_data.py
-    outs:
-      - data/raw/dataset_info.txt:
-          cache: false
-
-  preprocess:
-    cmd: python scripts/preprocess.py
-    deps:
-      - scripts/preprocess.py
-      - config/data/default.yaml
-      - data/raw/dataset_info.txt
-    outs:
-      - data/processed/train/data.npy:
-          cache: false
-      - data/processed/train/labels.npy:
-          cache: false
-      - data/processed/val/data.npy:
-          cache: false
-      - data/processed/val/labels.npy:
-          cache: false
-      - data/processed/test/data.npy:
-          cache: false
-      - data/processed/test/labels.npy:
-          cache: false
-
   train:
     cmd: python scripts/train.py training.logging.use_mlflow=true
     deps:
       - scripts/train.py
       - src/models/custom.py
       - src/training/trainer.py
+      - src/data/moabb_loader.py
       - config/config.yaml
       - config/model/custom.yaml
       - config/training/default.yaml
-      - data/processed/train/data.npy
-      - data/processed/val/data.npy
+      - config/data/default.yaml
     outs:
       - models/best_model.pt
       - models/last_model.pt
-
 
   tune:
     cmd: python scripts/tune.py --n-trials 30
@@ -55,5 +26,3 @@ stages:
       - config/config.yaml
       - config/model/custom.yaml
       - config/training/default.yaml
-
-
